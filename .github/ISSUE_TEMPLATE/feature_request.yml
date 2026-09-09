@@ -1,0 +1,62 @@
+name: Feature request
+description: Suggest a new capability or an improvement
+title: "[feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        LocalFlow deliberately stays small and fully offline. Requests that keep it that way
+        (no cloud services, no telemetry, no new heavyweight dependencies) are the easiest to say
+        yes to.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution.
+      placeholder: "When I dictate into my terminal the text is pasted, but the terminal ignores Ctrl+V, so ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+      validations:
+        required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you already tried?
+      description: Config settings, workarounds, other tools.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of LocalFlow does this touch?
+      options:
+        - Hotkeys / recording
+        - Speech recognition (ASR)
+        - Text cleanup (rules)
+        - Text cleanup (LLM / Ollama)
+        - Pasting / typing into apps
+        - Tray icon / Flow Dot / UI
+        - Install / setup
+        - Documentation
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This works fully offline (no cloud service, no telemetry).
+          required: true
+        - label: I would be willing to help test it.
+          required: false

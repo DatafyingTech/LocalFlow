@@ -1,0 +1,55 @@
+# LocalFlow pinned dependencies - CPU-only install (install.bat -CPU). No torch, no CUDA.
+# Identical to requirements.txt except: the seven nvidia-*-cu12 CUDA/cuDNN runtime wheels are
+# gone and onnxruntime-gpu is replaced by the plain CPU onnxruntime. That is about 2 GB less
+# to download. Keep the two files in step when you bump a pin.
+
+# --- ASR engine A: Parakeet via ONNX Runtime (CPU execution provider)
+onnxruntime==1.24.4
+onnx-asr==0.12.0
+huggingface_hub==1.30.0
+hf-xet==1.6.0
+
+# --- ASR engine B deps (faster-whisper itself: see install.ps1 / requirements-whisper.txt)
+ctranslate2==4.8.2
+tokenizers==0.23.2
+av==18.1.0
+tqdm==4.70.0
+
+# --- Windows integration
+pynput==1.8.2
+sounddevice==0.5.6
+numpy==2.5.2
+pyperclip==1.11.0
+pystray==0.19.5
+pillow==12.3.0
+PyYAML==6.0.3
+requests==2.34.2
+
+# --- tests
+pytest==9.1.1
+
+# --- transitive pins (kept explicit so installs are reproducible)
+anyio==4.15.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+colorama==0.4.6
+filelock==3.32.5
+flatbuffers==25.12.19
+fsspec==2026.7.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.19
+iniconfig==2.3.0
+mpmath==1.3.0
+packaging==26.3
+pluggy==1.6.0
+protobuf==7.36.1
+pycparser==3.0
+Pygments==2.21.0
+six==1.17.0
+sympy==1.14.0
+typing_extensions==4.16.0
+urllib3==2.7.0

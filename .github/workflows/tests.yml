@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rules-tests:
+    name: rules tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Only the pure-Python deps. The GPU/audio stack (onnxruntime-gpu, CUDA wheels,
+      # sounddevice, pynput, pystray) is deliberately NOT installed here: the rules pass
+      # must stay importable without it.
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      - name: Run rules tests
+        run: python -m pytest -q tests/test_cleanup.py
+
+      - name: Check config.example.yaml matches the built-in defaults
+        run: python -m tests.check_example_config

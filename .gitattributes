@@ -1,0 +1,21 @@
+# Normalize text files to LF in the repository; Git checks them out with
+# native line endings on Windows.
+* text=auto
+
+# Windows-only scripts must keep CRLF in the working tree or cmd.exe can
+# mis-parse them.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Cross-platform sources stay LF.
+*.py    text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.txt   text eol=lf
+
+# Binary assets: never touch these.
+*.png   binary
+*.wav   binary
+*.ico   binary

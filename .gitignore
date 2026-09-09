@@ -1,0 +1,26 @@
+# --- virtual environment / installed models
+.venv/
+models/
+
+# --- Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- runtime state (created on first run; never commit - it contains dictated text)
+history.jsonl
+localflow.log
+localflow.log.*
+config.yaml
+config.yaml.tmp
+
+# --- audio scratch files, but keep the bundled test clip
+*.wav
+!tests/sample_tts.wav
+
+# --- editors / build output
+.idea/
+.vscode/
+dist/
+build/
+*.egg-info/

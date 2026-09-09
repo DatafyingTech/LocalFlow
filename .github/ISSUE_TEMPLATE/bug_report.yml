@@ -1,0 +1,118 @@
+name: Bug report
+description: Something does not work (no text appears, wrong text, crash, slow, GPU errors)
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The single most useful thing you can paste is the output of
+        `--doctor` (below) - it answers most questions on its own.
+
+        LocalFlow is fully local, so nothing here has been sent anywhere. That also means
+        these files are yours and may contain private things:
+
+        - `history.jsonl` holds everything you dictated, plus the window title of the app you
+          dictated it into.
+        - `localflow.log` holds timings and the name of the foreground program. Run with
+          `--debug` and it also holds window titles and the full pasted text.
+        - `--doctor` lists your audio device names, which sometimes include a personal device.
+
+        **Only paste the lines that matter**, and check them before you post.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what did you get instead?
+      placeholder: |
+        I held Ctrl+Win in Notepad and said "hello world". The dot turned red, then blue, then
+        nothing was pasted.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `python -m localflow --doctor`
+      description: |
+        In the LocalFlow folder run:
+        `.\.venv\Scripts\python.exe -m localflow --doctor`
+        Paste the whole thing.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: smoke
+    attributes:
+      label: Output of `python -m tests.smoke_asr`
+      description: |
+        Only if the problem is with recognition, speed, startup or the GPU. Run:
+        `.\.venv\Scripts\python.exe -m tests.smoke_asr`
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant excerpt from `localflow.log`
+      description: |
+        The last 30-40 lines, or the lines around the failure (tray menu -> "Open log").
+        Redact any dictated text, window titles or device names you do not want public.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      description: "From `nvidia-smi` (top row), or write \"none / CPU mode\"."
+      placeholder: "RTX 4070 SUPER, driver 581.15"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: "Output of `.\\.venv\\Scripts\\python.exe -V`"
+      placeholder: "Python 3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: LocalFlow version
+      description: "`python -m localflow --version`, or the commit you are on."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "`winver`, e.g. Windows 11 Pro 24H2 (build 26100)"
+    validations:
+      required: true
+
+  - type: input
+    id: target-app
+    attributes:
+      label: Which app were you dictating into?
+      placeholder: "Notepad / Chrome / Slack / a game (which one?)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Anything non-default in your `config.yaml`?
+      description: Paste the settings you changed (not the whole file).
+      render: yaml
+    validations:
+      required: false

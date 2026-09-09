@@ -1,0 +1,6 @@
+# Dev/CI dependencies for the pure-Python tests (tests/test_cleanup.py).
+# These need no GPU, no audio device and no Windows APIs, so CI runs on Linux too.
+# The full runtime stack is in requirements.txt (installed by install.ps1).
+pytest==9.1.1
+PyYAML==6.0.3
+requests==2.34.2   # pure Python; enables the localflow.llm sanity-guard tests

@@ -1,0 +1,4 @@
+# Installed with `pip install --no-deps -r requirements-whisper.txt` (see install.ps1).
+# faster-whisper declares a dependency on the CPU-only `onnxruntime` wheel; installing it
+# normally would overwrite onnxruntime-gpu. All of its real deps are pinned in requirements.txt.
+faster-whisper==1.2.1
