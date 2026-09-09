@@ -69,22 +69,40 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
 
 ## Requirements
 
-| | Minimum | Recommended |
+|  | Minimum | Recommended |
 |---|---|---|
-| **OS** | Windows 10 64-bit | Windows 11 |
+| **OS** | Windows 10 64-bit, version 1809 | Windows 11 |
+| **CPU** | Any 64-bit x86 CPU | 6 cores or more |
+| **RAM** | 8 GB | 16 GB |
+| **GPU** | None. It runs on CPU, slowly | NVIDIA with **6 GB VRAM**, driver 525+ |
+| **Disk** | 10 GB free, split across two drives | SSD |
 | **Python** | 3.11 | 3.12 |
-| **GPU** | Works on CPU, but slowly | Any NVIDIA RTX card, driver 525+ |
-| **Disk** | ~10 GB free | — |
-| **RAM** | 8 GB | 16 GB+ |
+| **Internet** | Only to install | Not needed afterwards |
 
-You do **not** need the CUDA toolkit. The installer pulls everything through pip.
+**How much VRAM you actually need.** Speech recognition takes about 3 GB and is capped there by
+`asr.gpu_mem_limit_mb`. The optional cleanup model adds about 3 GB more.
 
-[Ollama](https://ollama.com) is optional but recommended — it powers the cleanup that removes filler
-words and applies your self-corrections. Without it, LocalFlow still transcribes and applies its
-built-in rules, just less cleverly.
+| Your GPU | What to expect |
+|---|---|
+| **8 GB or more** | Everything on, nothing to think about. A GTX 1660, RTX 2060, 3060, 4060 or better. |
+| **6 GB** | Works well. Leave headroom by keeping the cleanup model unloaded when idle, which is already the default. |
+| **4 GB** | Speech recognition is fine. Use a smaller cleanup model (`ollama pull gemma3:1b`, then set `llm.model: gemma3:1b`) or set `cleanup.level: none`. |
+| **No NVIDIA GPU** | Run `install.bat -CPU`. Expect a few seconds per utterance instead of a fraction of a second. |
 
-> **No NVIDIA GPU?** LocalFlow still works. Run `install.bat -CPU` and expect a few seconds per
-> utterance instead of a fraction of a second. AMD and Intel GPUs are not accelerated yet.
+**Where the 10 GB goes.** About 5.3 GB sits next to LocalFlow: 2.4 GB for the speech model and
+2.9 GB for the Python environment. About 3.3 GB more goes to `%USERPROFILE%\.ollama` for the
+cleanup model, which is usually on your C: drive. The installer checks both and tells you which one
+is short.
+
+You do **not** need the CUDA toolkit or Visual Studio. The installer pulls everything through pip.
+Do not install PyTorch into this environment; it brings an incompatible cuDNN.
+
+**What is optional.** [Ollama](https://ollama.com) powers the smart cleanup that removes filler
+words, applies your self-corrections and formats lists. Without it, LocalFlow still transcribes and
+still applies its built-in rules, just less cleverly. AMD and Intel GPUs are not accelerated yet.
+
+**A microphone**, obviously. Anything works, including a laptop's built-in one. Audio is normalized
+before transcription, so a cheap mic and a quiet voice are both fine.
 
 ---
 
@@ -110,8 +128,8 @@ downloads the speech model (~2.5 GB, one time), pulls the cleanup model, and run
 That is about **8 GB of downloads** and **10 to 30 minutes** on a normal connection. It tells you
 plainly if something is missing and what to do about it.
 
-That 10 GB is not all in one place. About 5 GB goes next to LocalFlow (`.venv` plus `models`) and
-about 4 GB goes to `%USERPROFILE%\.ollama`, which is usually on C:. The installer checks both drives
+That 10 GB is not all in one place. About 5.3 GB goes next to LocalFlow (`.venv` plus `models`) and
+about 3.3 GB goes to `%USERPROFILE%\.ollama`, which is usually on C:. The installer checks both drives
 and names the one that is short.
 
 **4. Double-click `run.bat`.**
