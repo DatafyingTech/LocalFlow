@@ -104,6 +104,25 @@ still applies its built-in rules, just less cleverly. AMD and Intel GPUs are not
 **A microphone**, obviously. Anything works, including a laptop's built-in one. Audio is normalized
 before transcription, so a cheap mic and a quiet voice are both fine.
 
+### Linux and macOS
+
+**Not supported today, and it is not a small job.** Roughly two thirds of the code is portable:
+speech recognition, audio capture, the cleanup rules, the Ollama pass, config and history have no
+Windows dependency at all. The parts that do not port are the ones that make it feel instant:
+
+| Piece | Portable? |
+|---|---|
+| Parakeet / Whisper recognition, audio capture, cleanup, Ollama, config, history | Yes, as-is |
+| Global hotkey | Mostly. `pynput` works on X11 and macOS, but Wayland blocks global key grabs |
+| Typing into the focused window | No. Rewrites needed for X11 (XTest), Wayland (portals, heavily restricted) or macOS (CGEvent, needs Accessibility permission) |
+| Focus and fullscreen detection | No. Win32-only today |
+| The status dot staying unfocused | No. Relies on a Win32 window style |
+
+Wayland is the real obstacle: it deliberately prevents applications from reading global keys or
+injecting synthetic input into other windows, which is the entire mechanism LocalFlow depends on.
+A Linux port is realistic on X11 and macOS, and awkward on Wayland. Contributions welcome, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ---
 
 ## Install
