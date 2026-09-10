@@ -155,6 +155,15 @@ def spoken_punctuation(text: str) -> str:
             text = re.sub(rf"[\s,]*{pat}[\s,]*", _lit(sym), text, flags=re.IGNORECASE)
         else:  # spaced
             text = re.sub(rf"[\s,]*{pat}[\s,]*", _lit(" " + sym + " "), text, flags=re.IGNORECASE)
+    # The ASR often punctuates for us, so a spoken "question mark" at the end of a sentence
+    # it already ended lands as "Friday??". Collapse a run of terminal marks to the last one
+    # the speaker actually asked for.
+    def _collapse(m: re.Match[str]) -> str:
+        run = m.group(0)
+        return run if run == "..." else run[-1]  # keep a deliberate ellipsis
+
+    text = re.sub(r"[.!?]{2,}", _collapse, text)
+    text = re.sub(r",\s*([.!?])", r"", text)
     return text
 
 

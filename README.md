@@ -18,10 +18,19 @@ Everything runs on your own machine. No account, no subscription, no cloud, no w
 
 ## What it does
 
-You hold **Ctrl+Win**, say *"um so can you send Sarah the report by Friday, no wait, make that Monday"*,
-and let go. About half a second later this lands in your email, chat box, or code editor:
+![LocalFlow in action](docs/images/demo.gif)
 
-> Can you send Sarah the report by Monday?
+*Nothing here is staged. A real person speaking into a real microphone, transcribed by Parakeet on
+the GPU, cleaned up by a local gemma3:4b, and typed into the text field by the real injection code.
+The millisecond figures on screen are the actual measured times from that take. Reproduce it with
+`python -m tools.record_demo`.*
+
+You hold **Ctrl+Win**, say *"send a report to Mark, no no wait, I meant to say send it to Sarah and
+CC me"*, and let go. Under half a second later, this lands in your email, chat box, or code editor:
+
+> Send a report to Sarah and CC me.
+
+That is the second scene in the recording above, and it took 394 ms end to end.
 
 The filler words are gone. The punctuation and capitals are there. It understood that you corrected
 yourself and kept only what you meant. It never left your computer.

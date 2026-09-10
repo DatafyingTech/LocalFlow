@@ -462,3 +462,11 @@ def test_backtrack_new_triggers(cfg, raw, expected):
 def test_apply_backtrack_disabled(cfg):
     cfg["backtrack"] = False
     assert cleanup.apply_backtrack("a scratch that b", cfg) == ("a scratch that b", 0)
+
+def test_spoken_punctuation_does_not_double_up(cfg):
+    # Parakeet often punctuates the sentence itself, so a spoken "question mark" on the end
+    # of an already-terminated sentence used to produce "Friday??".
+    assert clean("hey Sarah comma can you send me that report by Friday question mark",
+                 cfg).text == "Hey Sarah, can you send me that report by Friday?"
+    assert clean("Are we done? question mark", cfg).text == "Are we done?"
+    assert clean("this is a test period", cfg).text == "This is a test."
