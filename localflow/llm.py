@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Callable, Any
 
 import requests
 
@@ -96,6 +96,9 @@ class OllamaClient:
         self.timeout_per_word = float(cfg.get("timeout_per_word_ms", 80)) / 1000
         self.timeout_max = float(cfg.get("timeout_max_ms", 20000)) / 1000
         self.polish_timeout = float(cfg.get("polish_timeout_ms", 20000)) / 1000
+        self.handsfree_timeout = float(cfg.get("handsfree_timeout_ms", 60000)) / 1000
+        self.num_ctx = int(cfg.get("num_ctx", 8192))
+        self.segment_words = int(cfg.get("segment_words", 400))
         self.keep_alive = cfg.get("keep_alive", 600)
         self.temperature = float(cfg.get("temperature", 0))
         self.session = requests.Session()
@@ -257,6 +260,7 @@ class OllamaClient:
             "options": {
                 "temperature": self.temperature,
                 "num_predict": int(n_words * 2.5) + 40,
+                "num_ctx": self.num_ctx,
                 "top_p": 0.9,
                 "repeat_penalty": 1.0,
             },
@@ -292,6 +296,116 @@ class OllamaClient:
             return LLMResult(text, False, ms, f"rejected: {reason}")
         return LLMResult(out, True, ms, "ok")
 
+    def cleanup_long(self, text: str, level: str, *, timeout: float | None = None,
+                     fallback: "Callable[[str], str] | None" = None) -> LLMResult:
+        """Clean a long text (a whole hands-free speech) in sentence-aligned segments.
+
+        One request for a ten-minute speech would blow past the model context and any sane
+        timeout, and a single failure would throw the whole thing back to the rules pass. So
+        the text is split at sentence boundaries into segments of about `segment_words`, each
+        is cleaned on its own, and a segment whose cleanup fails is replaced by `fallback(seg)`
+        (the rules Backtrack) instead of poisoning its neighbours. `used` is True when at
+        least one segment came from the model.
+        """
+        segs = segment_text(text, self.segment_words)
+        timeout = self.handsfree_timeout if timeout is None else timeout
+        if len(segs) <= 1:
+            r = self.cleanup(text, level, timeout=timeout)
+            if not r.used and fallback:
+                return LLMResult(fallback(text), False, r.ms, r.reason)
+            return r
+        outs: list[str] = []
+        ms_total, n_used, reasons = 0.0, 0, []
+        for seg in segs:
+            r = self.cleanup(seg, level, timeout=timeout)
+            ms_total += r.ms
+            if r.used:
+                n_used += 1
+                outs.append(r.text)
+            else:
+                reasons.append(r.reason)
+                outs.append(fallback(seg) if fallback else seg)
+        joined = join_segments(outs)
+        if n_used == len(segs):
+            reason = "ok"
+        else:
+            reason = f"{len(segs) - n_used}/{len(segs)} segments fell back ({'; '.join(reasons[:3])})"
+        return LLMResult(joined, n_used > 0, ms_total, reason)
+
     def polish(self, text: str) -> LLMResult:
         """High-quality pass with the big model (slow; used by the polish hotkey)."""
         return self.cleanup(text, "high", model=self.polish_model, timeout=self.polish_timeout)
+
+
+# ---------------------------------------------------------------- long-text helpers
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+# A sentence that opens with one of these is a spoken correction of the sentence before it.
+_CORRECTION_LEAD = re.compile(
+    r"^(?:no\b[,.!]?(?:\s*no\b[,.!]?)?(?:\s*wait\b[,.!]?)?|wait\b[,.!]?|oops\b[,.!]?|scratch that\b|"
+    r"strike that\b|i meant?\b(?: to say)?|actually\b[,.]?|let me rephrase\b|correction\b[,.:]?)",
+    re.IGNORECASE,
+)
+
+
+def segment_text(text: str, max_words: int) -> list[str]:
+    """Split text into segments of roughly `max_words`, breaking only at sentence ends.
+
+    A single sentence longer than the limit (speech with no detectable pauses) is split on
+    word count, so no segment can exceed about twice the limit.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text.split()) <= max_words:
+        return [text]
+    sentences = [s.strip() for s in _SENT_SPLIT.split(text) if s and s.strip()]
+    # A spoken self-correction ("No, no, wait. I meant to say ...") only makes sense next to the
+    # sentence it corrects, so a sentence that opens with a correction cue is glued to the one
+    # before it instead of ever starting a new segment on its own.
+    glued: list[str] = []
+    for s in sentences:
+        if glued and _CORRECTION_LEAD.match(s):
+            glued[-1] = glued[-1] + " " + s
+        else:
+            glued.append(s)
+    sentences = glued
+    segs: list[str] = []
+    cur: list[str] = []
+    cur_words = 0
+    for s in sentences:
+        n = len(s.split())
+        if n > max_words:  # runaway sentence with no punctuation: hard-split on words
+            if cur:
+                segs.append(" ".join(cur))
+                cur, cur_words = [], 0
+            w = s.split()
+            for i in range(0, len(w), max_words):
+                segs.append(" ".join(w[i:i + max_words]))
+            continue
+        if cur and cur_words + n > max_words:
+            segs.append(" ".join(cur))
+            cur, cur_words = [], 0
+        cur.append(s)
+        cur_words += n
+    if cur:
+        segs.append(" ".join(cur))
+    return segs
+
+
+def join_segments(parts: list[str]) -> str:
+    """Join cleaned segments: a space between prose, a newline around list blocks."""
+    out = ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if not out:
+            out = part
+            continue
+        list_like = part.lstrip().startswith(("- ", "* ", "\u2022 ")) or "\n- " in part or "\n* " in part
+        prev_list = out.rstrip().splitlines()[-1].lstrip().startswith(("- ", "* ", "\u2022 "))
+        if list_like or prev_list or out.rstrip().endswith(":"):
+            out = out.rstrip() + "\n" + part
+        else:
+            out = out + " " + part
+    return out

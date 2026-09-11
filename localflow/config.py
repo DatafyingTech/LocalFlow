@@ -43,8 +43,9 @@ DEFAULTS: dict[str, Any] = {
         "max_seconds": 1200,  # hands-free cap (20 minutes)
         # hands-free chunking: a pause of this length after speech ends the chunk, which is
         # transcribed and pasted while you keep talking
+        "handsfree_mode": "whole",  # whole = record until you stop, then transcribe once | chunked = paste at each pause
         "handsfree_silence_ms": 700,
-        "handsfree_vad_threshold": 0.008,  # per-20 ms block RMS that counts as speech
+        "handsfree_vad_threshold": 0.002,  # per-20 ms block RMS that counts as speech (chunked mode only; quiet speakers sit near 0.003)
         "handsfree_max_chunk_s": 30,  # force a chunk boundary at the next pause after this
     },
     "asr": {
@@ -63,6 +64,7 @@ DEFAULTS: dict[str, Any] = {
     "cleanup": {
         # LLM level: none | light | medium | high. Rules below always run (they are ~1 ms).
         "level": "medium",
+        "handsfree_level": "high",  # cleanup level for a whole hands-free speech (the enhanced pass)
         "rules": True,  # set False for completely raw ASR output
         "spoken_punctuation": True,
         "remove_fillers": True,
@@ -105,6 +107,9 @@ DEFAULTS: dict[str, Any] = {
         "timeout_per_word_ms": 80,  # added per input word ...
         "timeout_max_ms": 20000,  # ... up to this cap
         "polish_timeout_ms": 20000,
+        "handsfree_timeout_ms": 60000,  # a long speech gets a long timeout; correctness over speed
+        "num_ctx": 8192,  # model context; 8192 covers ~25 min of speech in one hands-free session
+        "segment_words": 400,  # long texts are cleaned in sentence-aligned segments of about this size
         "keep_alive": 600,  # seconds the model stays in VRAM after a call (-1 = forever); re-warmed on PTT press
         "temperature": 0,
     },

@@ -58,8 +58,9 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
 
 ## Highlights
 
-- **Push-to-talk or hands-free.** Hold the key, or double-tap it to keep dictating continuously
-  while text flows in at every natural pause.
+- **Push-to-talk or hands-free.** Hold the key for one phrase, or double-tap it and talk for as
+  long as you like. Hands-free records the whole speech and delivers one cleaned result when you
+  stop, so nothing is cut off mid-sentence.
 - **Fixes what you say as you say it.** Say *"no wait"*, *"scratch that"*, *"I meant"*, or *"oops"*
   and the correction is applied instead of transcribed.
 - **Understands lists.** *"For the store I need potatoes, cream cheese, lasagna and spaghetti"*
@@ -94,9 +95,14 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
 | Your GPU | What to expect |
 |---|---|
 | **8 GB or more** | Everything on, nothing to think about. A GTX 1660, RTX 2060, 3060, 4060 or better. |
-| **6 GB** | Works well. Leave headroom by keeping the cleanup model unloaded when idle, which is already the default. |
-| **4 GB** | Speech recognition is fine. Use a smaller cleanup model (`ollama pull gemma3:1b`, then set `llm.model: gemma3:1b`) or set `cleanup.level: none`. |
+| **6 GB** | Works well. Leave headroom by keeping the cleanup model unloaded when idle, which is already the default. If VRAM gets tight, set `llm.num_ctx: 4096` (see below). |
+| **4 GB** | Speech recognition is fine. Use a smaller cleanup model (`ollama pull gemma3:1b`, then set `llm.model: gemma3:1b`) or set `cleanup.level: none`. Set `llm.num_ctx: 4096` here too. |
 | **No NVIDIA GPU** | Run `install.bat -CPU`. Expect a few seconds per utterance instead of a fraction of a second. |
+
+**About `llm.num_ctx`.** It is the context window given to the cleanup model, and it ships at 8192
+so that about 25 minutes of hands-free speech fits. That costs roughly 0.5 GB more VRAM for
+gemma3:4b than the old 4096 default. On a 4 GB or 6 GB card, put it back to `4096`, or lower
+`llm.segment_words` so each cleaned segment is smaller. Everything still works either way.
 
 **Where the 10 GB goes.** About 5.3 GB sits next to LocalFlow: 2.4 GB for the speech model and
 2.9 GB for the Python environment. About 3.3 GB more goes to `%USERPROFILE%\.ollama` for the
@@ -201,8 +207,8 @@ Open any text box. Notepad, a browser address bar, Slack, your email. Hold **Ctr
 | What you want | How |
 |---|---|
 | **Dictate one thing** | Hold **Ctrl+Win**, talk, release |
-| **Keep dictating** | **Double-tap Ctrl+Win**, press **Ctrl+Win+Space**, or click the dot. Text arrives at each pause |
-| **Stop dictating** | Tap **Ctrl+Win** again, click the dot, or press **Esc** |
+| **Keep dictating** | **Double-tap Ctrl+Win**, press **Ctrl+Win+Space**, or click the dot. Talk as long as you like; nothing is pasted until you stop |
+| **Stop dictating** | Tap **Ctrl+Win** again, press **Ctrl+Win+Space**, or click the dot. The whole speech is transcribed and cleaned in one pass, then pasted. **Esc** stops and throws it away |
 | **Throw away what you just said** | **Esc** while still holding |
 | **Paste that again** | **Shift+Alt+Z** |
 | **Extra-polished version** | Hold **Ctrl+Win+Alt** instead (slower, rewrites for clarity) |
@@ -227,7 +233,7 @@ Open any text box. Notepad, a browser address bar, Slack, your email. Hold **Ctr
 |---|---|
 | Grey | Ready and listening for your hotkey |
 | Red, pulsing with your voice | Recording |
-| Orange/red with a ring | Hands-free mode is on |
+| Orange/red with a ring | Hands-free mode is on. It stays like this for the whole speech, then turns blue while it transcribes and cleans |
 | Blue, blinking | Thinking — your text is coming |
 | Green | Just pasted |
 | Red ring | Something went wrong (check `localflow.log`) |
@@ -250,6 +256,7 @@ hotkeys:
 
 cleanup:
   level: medium           # none = fastest, raw-ish | light | medium | high = most rewriting
+  handsfree_level: high   # The level used for a whole hands-free speech
   dictionary:             # Names it keeps getting wrong
     local flow: LocalFlow
   snippets:               # Say the phrase, get the text
@@ -257,6 +264,7 @@ cleanup:
 
 audio:
   device: ""              # Part of your mic's name, or "" for the system default
+  handsfree_mode: whole   # whole = one pass when you stop | chunked = the old paste-at-each-pause mode
 ```
 
 A single key such as `[f9]` works fine as the push-to-talk chord. Bear in mind LocalFlow never
@@ -266,6 +274,18 @@ modifier chords are the safe picks; a letter key is not.
 **Cleanup levels.** `none` is pure transcription and the lowest latency. `light` removes fillers and
 fixes punctuation. `medium` (the default) also fixes grammar and formats lists. `high` rewrites for
 clarity and brevity — good for turning rambling into a tidy paragraph.
+
+**Hands-free uses its own level.** `cleanup.handsfree_level` (default `high`) is applied to a whole
+hands-free speech, because a long speech is where the heavier rewrite earns its keep. There is a
+real trade-off to know about. `high` handles spoken corrections best: in testing it resolved a
+mid-sentence "scratch that" correctly and kept every fact. It is also willing to tidy things away.
+In the same test it dropped a throwaway transition ("Oh, and one more thing.") and, where the
+speaker said the same thing twice, it kept it only once. `medium` stays closer to your wording but
+mangled that "scratch that" clause. So leave it on `high` if corrections matter most, set it to
+`medium` if you want your own words preserved as closely as possible, or `none` for a raw
+transcript. A long speech is cleaned in sentence-aligned segments of about `llm.segment_words`
+(400) words, and a segment the model fails on falls back to the rules cleanup on its own, so one
+slow request never costs you the whole speech.
 
 ---
 
@@ -403,6 +423,22 @@ reports exactly what Windows said.
 </details>
 
 <details>
+<summary><b>Hands-free dropped words / stopped mid-sentence</b></summary>
+
+This was real, and it is fixed. Hands-free used to work in chunks: a voice-activity detector
+watched for a 700 ms pause, closed the chunk there, transcribed it and pasted it while you carried
+on talking. The detector's loudness threshold sat above a normal speaking level, so quiet speech
+was read as silence, chunks closed while you were still talking, and words went missing.
+
+Hands-free now records the whole speech and transcribes it once when you stop, which is the
+`audio.handsfree_mode: whole` default. Nothing is pasted until you stop, and nothing is dropped in
+between. If you preferred live text arriving as you talk, set `audio.handsfree_mode: chunked` in
+`config.yaml`. The detector threshold in that mode is now `0.002` instead of `0.008`, which is
+below a quiet speaking voice, so chunked mode works far better than it did. Raise
+`audio.handsfree_vad_threshold` again if you are in a noisy room.
+</details>
+
+<details>
 <summary><b>My quiet speech gets dropped</b></summary>
 
 It shouldn't — audio is normalized before transcription and quiet speech is well supported. If it
@@ -445,6 +481,10 @@ Measured on an RTX 4070 SUPER with the GPU otherwise idle:
 | Paste | ~90 ms |
 | **Total, cleanup off** | **~150 ms** |
 | **Total, cleanup on** | **~250–500 ms** |
+
+Hands-free is a longer job because it holds the whole speech, but it is not a slow one. On the same
+machine, 35 seconds of continuous speech (88 words) transcribed in 524 ms with nothing dropped, and
+the cleanup of a realistic 215-word dictation took about 2.3 s at either `medium` or `high`.
 
 The reasoning behind each choice — engines benchmarked, models rejected, and why — is written up in
 [docs/research/](docs/research/).

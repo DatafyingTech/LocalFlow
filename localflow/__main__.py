@@ -432,16 +432,21 @@ class App:
             self.handsfree = False
             audio = self.recorder.stop()
             beep("handsfree_off", self._sounds())
-            self._queue.put((audio, False, True))
+            if self._handsfree_whole():
+                # one transcription of the whole speech, cleaned at the enhanced level
+                self._queue.put((audio, self.cfg["cleanup"].get("handsfree_level", "high"), True))
+            else:
+                self._queue.put((audio, False, True))
             if self._queue.empty() and self.state != "processing":
                 self.set_state("idle")
             log.info("hands-free off")
         else:
+            chunked = not self._handsfree_whole()
             try:
                 if self.state == "listening" and self.recorder.recording:
-                    self.recorder.set_chunked(True)  # PTT hold upgraded to hands-free
+                    self.recorder.set_chunked(chunked)  # PTT hold upgraded to hands-free
                 else:
-                    self.recorder.start(chunked=True)
+                    self.recorder.start(chunked=chunked)
             except Exception as e:
                 log.error("recorder.start failed: %s", e)
                 return
@@ -450,7 +455,15 @@ class App:
             self.set_state("handsfree")
             beep("handsfree", self._sounds())
             self._start_level_feed()
-            log.info("hands-free on (chunk on %d ms silence)", self.cfg["audio"].get("handsfree_silence_ms", 700))
+            if chunked:
+                log.info("hands-free on (chunked: paste at each %d ms pause)",
+                         self.cfg["audio"].get("handsfree_silence_ms", 700))
+            else:
+                log.info("hands-free on (whole: transcribe everything when you stop; cleanup level %s)",
+                         self.cfg["cleanup"].get("handsfree_level", "high"))
+
+    def _handsfree_whole(self) -> bool:
+        return str(self.cfg["audio"].get("handsfree_mode", "whole")).lower() != "chunked"
 
     def _on_chunk(self, audio) -> None:
         """Called from the audio thread when a hands-free pause closes a chunk."""
@@ -540,7 +553,15 @@ class App:
                 self.set_state("idle")
             return
 
-        level = "high" if polish else self._level_for_window(title)
+        # `polish` is False (normal), True (polish hotkey) or a level name: a whole hands-free
+        # speech, cleaned at cleanup.handsfree_level in sentence-aligned segments.
+        whole_speech = isinstance(polish, str)
+        if whole_speech:
+            level = polish
+        elif polish:
+            level = "high"
+        else:
+            level = self._level_for_window(title)
         use_llm = level != "none" and self.llm_ok
         t = time.perf_counter()
         # with the LLM on, self-corrections (Backtrack) and list formatting are left to the model;
@@ -551,7 +572,12 @@ class App:
 
         ms_llm, used = 0.0, False
         if text and use_llm and not res.snippet_fired:
-            out = self.llm.polish(text) if polish else self.llm.cleanup(text, level)
+            if whole_speech:
+                out = self.llm.cleanup_long(text, level, fallback=lambda s: cleanup.apply_backtrack(s, ccfg)[0])
+            elif polish:
+                out = self.llm.polish(text)
+            else:
+                out = self.llm.cleanup(text, level)
             ms_llm, used = out.ms, out.used
             if out.used:
                 text = cleanup.post_llm(out.text, ccfg)

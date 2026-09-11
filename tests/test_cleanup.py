@@ -470,3 +470,50 @@ def test_spoken_punctuation_does_not_double_up(cfg):
                  cfg).text == "Hey Sarah, can you send me that report by Friday?"
     assert clean("Are we done? question mark", cfg).text == "Are we done?"
     assert clean("this is a test period", cfg).text == "This is a test."
+
+
+# ------------------------------------------------------------------ long-text segmenting (llm)
+def test_segment_text_keeps_short_text_whole():
+    from localflow.llm import segment_text
+    assert segment_text("Short sentence. Another one.", 400) == ["Short sentence. Another one."]
+    assert segment_text("   ", 400) == []
+
+
+def test_segment_text_splits_only_at_sentence_ends():
+    from localflow.llm import segment_text
+    sents = [f"Sentence number {i} has exactly seven words here." for i in range(60)]  # 8 words each
+    text = " ".join(sents)
+    segs = segment_text(text, 50)
+    assert len(segs) >= 8
+    assert all(len(s.split()) <= 50 for s in segs)
+    assert all(s.endswith(".") for s in segs)          # never cut mid-sentence
+    assert " ".join(segs).split() == text.split()      # nothing lost, nothing duplicated
+
+
+def test_segment_text_hard_splits_a_runaway_sentence():
+    from localflow.llm import segment_text
+    text = " ".join(f"w{i}" for i in range(1000))     # no punctuation at all
+    segs = segment_text(text, 400)
+    assert len(segs) == 3
+    assert " ".join(segs).split() == text.split()
+
+
+def test_join_segments_prose_and_lists():
+    from localflow.llm import join_segments
+    assert join_segments(["Hello there.", "How are you?"]) == "Hello there. How are you?"
+    out = join_segments(["For the store I need:", "- Milk\n- Eggs", "Then we go home."])
+    assert out == "For the store I need:\n- Milk\n- Eggs\nThen we go home."
+
+
+def test_segment_text_keeps_a_correction_with_its_sentence():
+    from localflow.llm import segment_text
+    # Seven 5-word sentences (35 words) plus "Send a report to Mark." (5 words) land exactly on a
+    # 40-word segment limit, so without the correction glue "No, no, wait." would be the first
+    # sentence of the NEXT segment and the model could never see what it corrects.
+    filler = " ".join(f"Filler sentence number {i} here." for i in range(7))
+    tail = " ".join(f"Trailing sentence number {i} here." for i in range(7))
+    text = filler + " Send a report to Mark. No, no, wait. I meant to say send it to Sarah. " + tail
+    segs = segment_text(text, 40)
+    seg = next(s for s in segs if "Send a report to Mark." in s)
+    assert "No, no, wait." in seg and "I meant to say send it to Sarah." in seg, segs
+    assert " ".join(segs).split() == text.split()

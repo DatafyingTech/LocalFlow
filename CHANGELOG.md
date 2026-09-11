@@ -4,6 +4,41 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-09-11
+
+### Changed
+
+- **Hands-free now records the whole speech** and transcribes it in one pass when you stop
+  (`audio.handsfree_mode: whole`, the new default). Nothing is pasted while you talk. The result
+  is cleaned at the new `cleanup.handsfree_level` (default `high`), the same enhanced pass the
+  polish hotkey uses. The previous chunk-at-every-pause behaviour is still available as
+  `audio.handsfree_mode: chunked`.
+- `audio.handsfree_vad_threshold` default lowered from `0.008` to `0.002` for chunked mode. The
+  old value sat above a normal speaking level (around 0.003 RMS), so real speech was classified as
+  silence: chunks closed while the speaker was still talking and the "only silence so far" buffer
+  trim discarded words. This was the root cause of hands-free dropping words during continuous
+  speech.
+
+### Added
+
+- **Segmented cleanup for long speech** (`llm.cleanup_long`). A transcript is split at sentence
+  boundaries into segments of about `llm.segment_words` (new, default 400) words, each cleaned
+  with `llm.handsfree_timeout_ms` (new, default 60000), then joined. A segment whose cleanup fails
+  or times out falls back to the rules-based Backtrack for that segment alone, so one slow request
+  no longer throws a whole speech back to raw text.
+- Sentences opening with a spoken correction ("No, no, wait.", "I meant to say", "scratch that",
+  "actually", "oops") are glued to the sentence before them, so a correction is never split from
+  what it corrects by a segment boundary.
+- `llm.num_ctx` (new, default 8192) raises the cleanup model's context window so about 25 minutes
+  of speech fits. This costs roughly 0.5 GB more VRAM for gemma3:4b than the 4096 default; the
+  README's VRAM guidance now says to set it back to 4096 on 4 GB and 6 GB cards.
+- A real-voice demo recording in the README, produced by `python -m tools.record_demo`.
+
+### Fixed
+
+- A spoken "question mark" at the end of a sentence the recogniser had already punctuated produced
+  `??`. Duplicate terminal punctuation is now collapsed, with ellipsis (`...`) preserved.
+
 ## [0.1.0] - 2026-09-09
 
 First public release. A fully local push-to-talk dictation app for Windows: hold a hotkey, talk,

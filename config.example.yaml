@@ -27,9 +27,19 @@ audio:
   normalize: true               # peak-normalise each clip so whispering still transcribes
   normalize_dbfs: -3.0
   max_seconds: 1200             # hands-free safety cap (20 min)
-  handsfree_silence_ms: 700     # pause length that closes a hands-free chunk
-  handsfree_vad_threshold: 0.008  # raise it in a noisy room
-  handsfree_max_chunk_s: 30
+  # How hands-free (double-tap PTT / Ctrl+Win+Space / click the dot) behaves:
+  #   whole   - default. Records everything and does nothing until you stop, then transcribes the
+  #             whole speech in one pass and cleans it at cleanup.handsfree_level. Nothing is
+  #             pasted while you talk, so nothing can be cut off mid-sentence.
+  #   chunked - the old behaviour: a pause in your speech closes a chunk, which is transcribed and
+  #             pasted while you keep talking. Live text, at the cost of accuracy across a pause.
+  handsfree_mode: whole
+  # The three keys below do nothing in whole mode; they only shape chunked mode.
+  handsfree_silence_ms: 700     # chunked only: how long a pause must be to close a chunk
+  handsfree_vad_threshold: 0.002  # chunked only: loudness counted as speech. A normal speaking
+                                #   voice is around 0.003 RMS, so keep this well under it or your
+                                #   speech is read as silence. Raise it only in a noisy room.
+  handsfree_max_chunk_s: 30     # chunked only: close a chunk anyway after this long without a pause
 
 # ---------------------------------------------------------------- speech recognition
 asr:
@@ -52,6 +62,10 @@ cleanup:
   #   medium - plus grammar and light restructuring (recommended)
   #   high   - rewrite for clarity and brevity
   level: medium
+  # Level used for a whole hands-free speech (same enhanced pass as the polish hotkey). "high"
+  # handles spoken corrections best but will also tidy away throwaway asides and repeated content;
+  # use "medium" to keep your wording closer to what you said, or "none" for a raw transcript.
+  handsfree_level: high
   rules: true                   # false = completely raw ASR output
   spoken_punctuation: true      # "comma", "period", "new line", "at sign", ...
   remove_fillers: true
@@ -117,6 +131,15 @@ llm:
   timeout_per_word_ms: 80       # added per input word ...
   timeout_max_ms: 20000         # ... up to this cap
   polish_timeout_ms: 20000
+  handsfree_timeout_ms: 60000   # timeout per segment of a whole hands-free speech. Generous on
+                                #   purpose: a long speech is worth waiting for, and a segment that
+                                #   does time out falls back to the rules cleanup on its own.
+  num_ctx: 8192                 # model context window. 8192 covers roughly 25 minutes of speech but
+                                #   costs about 0.5 GB more VRAM for gemma3:4b than the old 4096.
+                                #   On a 4 GB or 6 GB card set this back to 4096.
+  segment_words: 400            # a long text is cleaned in sentence-aligned segments of about this
+                                #   many words, then joined. Lower it if the model is short on
+                                #   context; a segment that fails only affects itself.
   keep_alive: 600               # seconds the model stays in VRAM after a call (-1 = forever)
   temperature: 0
 

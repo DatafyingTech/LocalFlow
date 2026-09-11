@@ -64,3 +64,26 @@ Per-app cleanup style by foreground window title (pywin32/GetForegroundWindow); 
 ## Amendments (from user, 2026-09-03)
 10. Overlay pill is a real button: always visible, draggable, click toggles hands-free, right-click menu mirrors tray, position persisted, topmost + WS_EX_NOACTIVATE so it never steals focus. ~90x32 px, bottom-center default.
 11. Double-tap of the PTT hotkey (within ~400 ms, configurable) enters hands-free continuous dictation; chunks transcribed and pasted on VAD silence (~700 ms, configurable) so text flows while talking. Single tap, Esc, or clicking the pill ends it. Pill shows hands-free state distinctly.
+
+## Amendments (2026-09-11)
+
+12. **Hands-free records the whole speech instead of chunking on VAD silence.** Amendment 11 above
+    describes the original design and is now the non-default `audio.handsfree_mode: chunked` path.
+    The default is `whole`: record until the user stops, then transcribe everything in one pass and
+    clean it at `cleanup.handsfree_level` (default `high`).
+
+    Why it changed. Chunking lost words during continuous speech. The VAD loudness threshold
+    (`handsfree_vad_threshold: 0.008`) sat above the author's actual speaking level of about
+    0.003 RMS, so real speech was classified as silence: chunks closed while the user was still
+    talking, and the "only silence so far" buffer trim discarded speech outright. The threshold
+    default is now 0.002, which fixes chunked mode for quiet speakers, but the deeper point is that
+    pasting partial text live is the wrong trade for this app. One accurate pass over a finished
+    speech beats a stream of guesses at pause boundaries.
+
+    Consequence for cleanup. A whole speech can run many minutes, which no single LLM request
+    handles well. `llm.cleanup_long()` splits the transcript at sentence boundaries into segments
+    of about `llm.segment_words` (400), cleans each with `llm.handsfree_timeout_ms` (60 s), and
+    joins them; a segment that fails falls back to the rules Backtrack for that segment only.
+    Sentences opening with a spoken correction cue are glued to the sentence before them so a
+    correction is never separated from what it corrects. `llm.num_ctx` was raised to 8192 so about
+    25 minutes of speech fits in context.
