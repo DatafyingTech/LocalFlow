@@ -12,8 +12,10 @@ import android.os.PowerManager
 import android.provider.Settings as SysSettings
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -26,9 +28,13 @@ import java.util.concurrent.Executors
 /** Setup screen: PC connection, permission checklist, the dot switch and a few preferences. */
 class MainActivity : AppCompatActivity() {
 
-    private companion object {
-        const val REQ_MIC = 10
-        const val REQ_NOTIF = 11
+    companion object {
+        private const val REQ_MIC = 10
+        private const val REQ_NOTIF = 11
+        private const val HIGHLIGHT_MS = 2500L
+
+        /** Boolean extra: scroll to and highlight the PC-connection card (the dot sends this when nothing is set up). */
+        const val EXTRA_SHOW_CONNECTION = "tech.datafying.localflow.extra.SHOW_CONNECTION"
     }
 
     private lateinit var settings: Settings
@@ -39,8 +45,11 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var serverUrl: EditText
     private lateinit var token: EditText
+    private lateinit var urlHint: TextView
+    private lateinit var connectionCard: View
     private lateinit var connectionStatus: TextView
     private lateinit var showDot: SwitchCompat
+    private lateinit var showOnlyNote: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,11 +59,18 @@ class MainActivity : AppCompatActivity() {
         serverUrl = findViewById(R.id.serverUrl)
         token = findViewById(R.id.token)
         connectionStatus = findViewById(R.id.connectionStatus)
+        urlHint = findViewById(R.id.urlHint)
+        connectionCard = findViewById(R.id.connectionCard)
         showDot = findViewById(R.id.showDot)
+        showOnlyNote = findViewById(R.id.showOnlyNote)
 
         serverUrl.setText(settings.serverUrl)
         token.setText(settings.token)
-        serverUrl.addTextChangedListener(afterChange { settings.serverUrl = it })
+        updateUrlHint(settings.serverUrl)
+        serverUrl.addTextChangedListener(afterChange {
+            settings.serverUrl = it
+            updateUrlHint(it)
+        })
         token.addTextChangedListener(afterChange { settings.token = it })
 
         findViewById<Button>(R.id.pasteSetup).setOnClickListener { pasteSetupLine() }
@@ -71,12 +87,39 @@ class MainActivity : AppCompatActivity() {
         }
 
         showDot.setOnCheckedChangeListener { _, on -> onShowDotToggled(on) }
+        // OverlayService listens to the preference and re-evaluates the dot at once.
+        bindSwitch(R.id.showOnlyWhenTyping, settings.showOnlyWhenTyping) { settings.showOnlyWhenTyping = it }
         bindSwitch(R.id.pressEnter, settings.pressEnter) { settings.pressEnter = it }
         bindSwitch(R.id.haptics, settings.haptics) { settings.haptics = it }
         bindSwitch(R.id.sounds, settings.sounds) { settings.sounds = it }
 
         findViewById<TextView>(R.id.versionText).text =
             "LocalFlow for Android ${BuildConfig.VERSION_NAME} · API contract v1"
+
+        if (intent?.getBooleanExtra(EXTRA_SHOW_CONNECTION, false) == true) highlightConnection()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_SHOW_CONNECTION, false)) highlightConnection()
+    }
+
+    /** Scroll the connection card into view, flash it, and put the caret in the empty field. */
+    private fun highlightConnection() {
+        connectionCard.post {
+            var p = connectionCard.parent
+            while (p != null && p !is ScrollView) p = p.parent
+            (p as? ScrollView)?.smoothScrollTo(0, connectionCard.top)
+            val flash = (ContextCompat.getColor(this, R.color.dot_processing) and 0x00FFFFFF) or 0x33000000
+            connectionCard.setBackgroundColor(flash)
+            connectionCard.postDelayed({ connectionCard.background = null }, HIGHLIGHT_MS)
+            if (serverUrl.text.isNullOrBlank()) serverUrl.requestFocus() else if (token.text.isNullOrBlank()) token.requestFocus()
+        }
+    }
+
+    private fun updateUrlHint(url: String) {
+        urlHint.visibility = if (url.isBlank()) View.VISIBLE else View.GONE
     }
 
     override fun onResume() {
@@ -120,7 +163,9 @@ class MainActivity : AppCompatActivity() {
         }
         serverUrl.setText(parsed.first)
         token.setText(parsed.second)
-        toast("Server and token filled in")
+        // Echo the host so the user can see the right PC was picked up; never the token.
+        val host = Uri.parse(parsed.first).host ?: parsed.first
+        toast("Setup line pasted: PC is $host. Testing the connection…")
         testConnection()
     }
 
@@ -143,7 +188,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: ApiClient.ApiException) {
                 when (e.kind) {
                     ApiClient.Kind.NETWORK -> "PC not reachable. Is Tailscale on (phone and PC), and is phone access enabled in the PC tray?"
-                    ApiClient.Kind.BAD_URL -> "That URL does not look right. Expected http://pc-name.tailnet.ts.net"
+                    ApiClient.Kind.BAD_URL -> e.message ?: ApiClient.MSG_URL_MALFORMED   // blank vs malformed
                     else -> "Error: ${e.message}"
                 }
             } catch (e: Exception) {
@@ -170,6 +215,9 @@ class MainActivity : AppCompatActivity() {
         setPerm(R.id.permAccessText, R.id.permAccessBtn, access, "Accessibility service", "types the text into the focused field")
         setPerm(R.id.permNotifText, R.id.permNotifBtn, notif, "Notifications", "keeps the dot alive in the background")
         setPerm(R.id.permBatteryText, R.id.permBatteryBtn, battery, "Battery: unrestricted", "stops Android killing the dot")
+
+        // Without the accessibility service the app cannot tell when typing is possible.
+        showOnlyNote.visibility = if (access) View.GONE else View.VISIBLE
     }
 
     private fun setPerm(textId: Int, btnId: Int, ok: Boolean, name: String, why: String) {

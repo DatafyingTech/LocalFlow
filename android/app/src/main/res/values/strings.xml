@@ -14,15 +14,18 @@
     <string name="btn_paste_setup">Paste setup line</string>
     <string name="btn_test">Test connection</string>
     <string name="status_not_tested">Not tested yet.</string>
+    <string name="url_blank_hint">On the PC: right-click the dot → Phone setup → Copy setup line, then press Paste setup line here.</string>
 
     <string name="section_permissions">Permissions</string>
     <string name="permissions_help">Each one is needed for the dot to work. Tap Open, flip the switch on the system page, then come back.</string>
 
     <string name="section_dot">The dot</string>
     <string name="switch_show_dot">Show the dot</string>
+    <string name="switch_show_only_when_typing">Show the dot only when a text field is active</string>
+    <string name="show_only_needs_service">Needs the accessibility service (Permissions above). Until it is on, the dot stays visible everywhere.</string>
     <string name="switch_press_enter">Press Enter when you say “press enter”</string>
     <string name="switch_haptics">Haptic tick on state changes</string>
     <string name="switch_sounds">Sounds</string>
 
-    <string name="how_to">Hold the dot to talk (push-to-talk), release to send. Tap it once for hands-free, tap ✓ when you are done, ✕ to throw the recording away. Drag it anywhere; it snaps to the nearest edge.\n\nGrey = ready. Red = recording. Orange ring = hands-free. Blue = the PC is thinking. Green = text inserted. Red ring = something went wrong (a toast says what). If the red ring stays, the PC timed out: tap the dot to retry with the same audio.</string>
+    <string name="how_to">Hold the dot to talk (push-to-talk), release to send. Tap it once for hands-free, tap ✓ when you are done, ✕ to throw the recording away. Drag it anywhere; it snaps to the nearest edge. By default the dot only appears while a text field is active or the keyboard is up.\n\nGrey = ready. Red = recording. Orange ring = hands-free. Blue = the PC is thinking. Green = text inserted. Red ring = something went wrong (a toast says what). If the red ring stays, the PC timed out: tap the dot to retry with the same audio.</string>
 </resources>

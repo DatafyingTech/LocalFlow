@@ -3,10 +3,10 @@
 A floating dot that dictates into any app on your phone, using the LocalFlow PC on your
 Tailscale network to do the transcription. Nothing leaves your own devices.
 
-> **Honesty note.** The app in `android/` builds (`assembleDebug`, unit tests and lint pass
-> locally and in CI), but as of this writing the author has not yet run it on a physical phone.
-> Everything below describes what it is built to do. If something misbehaves, see
-> [What to report](#what-to-report) at the end; the first bug reports will be what makes it solid.
+> **Status.** Version 0.1.1. The app builds (`assembleDebug`, unit tests and lint pass locally
+> and in CI) and 0.1.0 has been run on a Samsung Galaxy S23: the dot, waveform, colours and
+> ✕/✓ work. The "only show the dot while typing" behaviour in 0.1.1 is new; if something
+> misbehaves, see [What to report](#what-to-report) at the end.
 
 ## What you need
 
@@ -38,11 +38,24 @@ Tailscale network to do the transcription. Nothing leaves your own devices.
 2. Get that line onto the phone. Easiest: paste it into a note or a chat with yourself, then
    copy it on the phone. (If you use a clipboard sync such as Windows *Nearby Share*, KDE
    Connect or Samsung *Continue apps on other devices*, it is already there.)
-3. In the app tap **Paste setup line**. The Server URL and Token fields fill in and a
-   connection test runs. You should see something like
+3. In the app tap **Paste setup line**. The Server URL and Token fields fill in, a toast
+   confirms which PC was picked up (`Setup line pasted: PC is your-pc.your-tailnet.ts.net`;
+   the token is never shown) and a connection test runs. You should see something like
    `Connected: LocalFlow 0.1.1 · parakeet on GPU · gemma3:4b · ready`.
    - Or type them by hand: the URL is the PC's MagicDNS name shown in the tray, not the
      `100.x.y.z` address (see API.md for why).
+
+**What happens while the address is blank.** The app ships with no PC address (the author's
+tailnet name is not baked in), so until you paste the setup line:
+
+- The setup screen shows a hint under the empty Server URL field: *On the PC: right-click the
+  dot → Phone setup → Copy setup line, then press Paste setup line here.*
+- Holding or tapping the dot does **not** record. The dot shows a red ring, a toast says
+  *LocalFlow is not connected to your PC yet. Opening setup…*, and the app opens with the
+  PC-connection card scrolled into view and highlighted. The same happens when the token is blank.
+- **Test connection** says *No PC address set. Paste the setup line from your PC.* A typed
+  address that is not a URL gets *That address does not look right. Expected
+  http://pc-name.tailnet.ts.net* instead.
 
 ## The four (five) permissions
 
@@ -68,7 +81,9 @@ The accessibility page shows a warning about full control. That is Android's gen
 every accessibility service. LocalFlow reads only the focused text field to insert text and
 never sends anything anywhere except to your own PC.
 
-Finally, flip **Show the dot**. The dot appears at the right edge of the screen.
+Finally, flip **Show the dot**. The dot appears at the right edge of the screen the next time
+a text field is active (tap into any field, or open the app's own Server URL field, to see it;
+see *When it appears* below).
 
 If you later revoke the microphone (or Android auto-resets unused permissions), the dot still
 appears and its notification still works, but holding or tapping it opens the app with a
@@ -78,6 +93,14 @@ without restarting the dot.
 ## Using the dot
 
 The dot works exactly like the desktop Flow Dot and shows the same colours.
+
+**When it appears.** Like Wispr Flow, the dot only shows itself when you can type: it appears
+as soon as a text field is focused or the keyboard comes up, and hides again about a third of a
+second after you leave (so it does not blink when you hop between fields). It never disappears
+while you are recording, while the PC is thinking, or during the green "inserted" flash. The
+accessibility service is what tells the app that a field is active, so **with that service off
+the dot stays visible on every screen**. To have it always visible anyway, switch off *Show the
+dot only when a text field is active* in the app; the change applies immediately.
 
 | Do this | What happens |
 |---|---|
@@ -109,6 +132,8 @@ To stop the dot: the notification's **Stop** button, or the switch in the app.
 | Symptom | Cause | Fix |
 |---|---|---|
 | The switch is on but there is no dot | *Display over other apps* is off | Grant it (row 2), then toggle the switch again |
+| The dot never appears (or only on some screens) | *Show the dot only when a text field is active* is on and no text field is focused; or the accessibility service is off, in which case the app cannot tell and keeps the dot visible everywhere | Tap into a text field or open the keyboard and the dot appears. To see it all the time, switch that setting off. If it is on but the dot still shows everywhere, turn on the accessibility service (row 3). |
+| Holding the dot shows a red ring and opens the app | No PC address or token is set yet | Paste the setup line (see *Connect it to your PC*); the highlighted card is where it goes |
 | The switch flips itself back off | The microphone permission was denied (Android 14+ will not start the dot's service without it) | Grant Microphone (row 1; after two denials only the system page can, tap *Open*), then flip the switch again |
 | Toast "Android refused microphone access for the dot" | Android 14+ blocked the upgrade to a microphone service while the app was in the background | Open the app once so it is in the foreground, then hold the dot again; check Battery is *Unrestricted* (row 5) |
 | Text ends up on the clipboard, toast says "Copied, paste it where you want" | The accessibility service is off, or this app's text field refuses programmatic text (some browsers, some games) | Turn on the service (row 3). If it is on and one specific app still does this, that app blocks it: long-press → Paste. Please report which app. |
@@ -138,7 +163,7 @@ Open an issue at <https://github.com/DatafyingTech/LocalFlow/issues> with:
 ```
 cd android
 ./gradlew assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest      # WAV header + text-splice tests, no device needed
+./gradlew testDebugUnitTest      # WAV header, text-splice, dot-visibility and URL tests, no device needed
 ```
 
 Needs JDK 17 and the Android SDK (platform 35; the build downloads build-tools 34.0.0 itself).

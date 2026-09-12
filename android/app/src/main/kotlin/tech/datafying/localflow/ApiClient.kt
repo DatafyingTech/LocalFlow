@@ -53,7 +53,26 @@ class ApiClient(private val settings: Settings) {
         private const val READ_PTT_S = 30L
         private const val READ_HANDSFREE_S = 120L
         private val WAV = "audio/wav".toMediaType()
+
+        const val MSG_URL_BLANK = "No PC address set. Paste the setup line from your PC."
+        const val MSG_URL_MALFORMED = "That address does not look right. Expected http://pc-name.tailnet.ts.net"
+
+        /** Blank means "never set up"; malformed means the user typed something that is not a URL. */
+        fun classifyUrl(raw: String): UrlProblem = when {
+            raw.isBlank() -> UrlProblem.BLANK
+            raw.trim().toHttpUrlOrNull() == null -> UrlProblem.MALFORMED
+            else -> UrlProblem.NONE
+        }
+
+        /** Human-readable reason the address cannot be used, or null when it can. */
+        fun urlProblemMessage(raw: String): String? = when (classifyUrl(raw)) {
+            UrlProblem.BLANK -> MSG_URL_BLANK
+            UrlProblem.MALFORMED -> MSG_URL_MALFORMED
+            UrlProblem.NONE -> null
+        }
     }
+
+    enum class UrlProblem { NONE, BLANK, MALFORMED }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(CONNECT_S, TimeUnit.SECONDS)
@@ -62,8 +81,11 @@ class ApiClient(private val settings: Settings) {
         .retryOnConnectionFailure(false)
         .build()
 
-    private fun baseUrl(): HttpUrl =
-        settings.serverUrl.toHttpUrlOrNull() ?: throw ApiException(Kind.BAD_URL, "Server URL is not valid")
+    private fun baseUrl(): HttpUrl {
+        val raw = settings.serverUrl
+        return raw.trim().toHttpUrlOrNull()
+            ?: throw ApiException(Kind.BAD_URL, urlProblemMessage(raw) ?: MSG_URL_MALFORMED)
+    }
 
     private fun userAgent() = "LocalFlow-Android/${BuildConfig.VERSION_NAME}"
 

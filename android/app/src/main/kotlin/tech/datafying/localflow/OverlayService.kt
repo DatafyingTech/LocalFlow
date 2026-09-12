@@ -60,6 +60,8 @@ class OverlayService : Service(), View.OnTouchListener {
         private const val MIN_AUDIO_MS = 250L
         private const val DONE_MS = 700L
         private const val ERROR_MS = 2500L
+        /** Focus hops between fields (and keyboard show/hide) within this window do not blink the dot. */
+        private const val HIDE_DEBOUNCE_MS = 350L
 
         @Volatile
         var isRunning: Boolean = false
@@ -92,6 +94,14 @@ class OverlayService : Service(), View.OnTouchListener {
     private var toneGen: ToneGenerator? = null
     /** Foreground-service type we are currently running as (0 below Android 10). */
     private var fgType = 0
+
+    // visibility: "show only when typing" (see DotVisibility)
+    private var canType = false
+    private val hideJob = Runnable { applyVisibility() }
+    private val canTypeListener: (Boolean) -> Unit = { v -> main.post { onCanType(v) } }
+    private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Settings.KEY_SHOW_ONLY_WHEN_TYPING) reevaluateVisibility()
+    }
 
     // gesture bookkeeping
     private var downRawX = 0f
@@ -129,6 +139,11 @@ class OverlayService : Service(), View.OnTouchListener {
         }
         addDot()
         isRunning = true
+
+        canType = InsertionService.canType
+        InsertionService.canTypeListener = canTypeListener
+        settings.addListener(prefsListener)
+        reevaluateVisibility()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -142,6 +157,8 @@ class OverlayService : Service(), View.OnTouchListener {
 
     override fun onDestroy() {
         isRunning = false
+        if (InsertionService.canTypeListener === canTypeListener) InsertionService.canTypeListener = null
+        if (::settings.isInitialized) settings.removeListener(prefsListener)
         main.removeCallbacksAndMessages(null)
         recorder?.discard()
         recorder = null
@@ -326,8 +343,55 @@ class OverlayService : Service(), View.OnTouchListener {
         updateWindow()
     }
 
+    // ------------------------------------------------------------------ visibility
+    private fun onCanType(v: Boolean) {
+        canType = v
+        reevaluateVisibility()
+    }
+
+    private fun wantVisible(): Boolean = DotVisibility.decide(
+        canType = canType,
+        state = state,
+        showOnlyWhenTyping = settings.showOnlyWhenTyping,
+        serviceEnabled = InsertionService.instance != null,
+    )
+
+    /** Show immediately; hide after [HIDE_DEBOUNCE_MS] unless something makes it wanted again. */
+    private fun reevaluateVisibility() {
+        if (!::dot.isInitialized) return
+        if (wantVisible()) {
+            main.removeCallbacks(hideJob)
+            setDotVisible(true)
+        } else if (dot.visibility == View.VISIBLE) {
+            main.removeCallbacks(hideJob)
+            main.postDelayed(hideJob, HIDE_DEBOUNCE_MS)
+        }
+    }
+
+    private fun applyVisibility() {
+        if (!::dot.isInitialized) return
+        setDotVisible(wantVisible())
+    }
+
+    /**
+     * INVISIBLE (not removing the window) keeps the position and the layout params; the window
+     * manager stops routing touches to a window whose root view is not VISIBLE.
+     */
+    private fun setDotVisible(visible: Boolean) {
+        val target = if (visible) View.VISIBLE else View.INVISIBLE
+        if (dot.visibility == target) return
+        if (!visible) {
+            // A finger may be resting on the dot: drop the pending long-press so it cannot start
+            // a recording from a dot that is no longer on screen.
+            main.removeCallbacks(longPress)
+            moved = false
+        }
+        dot.visibility = target
+    }
+
     // ------------------------------------------------------------------ gestures
     override fun onTouch(v: View, ev: MotionEvent): Boolean {
+        if (dot.visibility != View.VISIBLE) return false   // a hidden dot never intercepts touches
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downRawX = ev.rawX
@@ -398,6 +462,17 @@ class OverlayService : Service(), View.OnTouchListener {
             toast("LocalFlow needs the microphone. Opening settings…")
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             pttFired = false
+            return
+        }
+        if (settings.serverUrl.isBlank() || settings.token.isBlank()) {
+            // Nothing to send the audio to. Do not record; take the user to the connection card.
+            toast("LocalFlow is not connected to your PC yet. Opening setup…")
+            setState(DotView.State.ERROR, ERROR_MS)
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra(MainActivity.EXTRA_SHOW_CONNECTION, true),
+            )
             return
         }
         ensureMicType()
@@ -513,10 +588,15 @@ class OverlayService : Service(), View.OnTouchListener {
         resetJob?.let { main.removeCallbacks(it) }
         resetJob = null
         dot.state = s
+        reevaluateVisibility()
         if (autoResetMs > 0) {
             val job = Runnable {
                 resetJob = null
-                if (dot.state == s) dot.state = DotView.State.IDLE
+                if (dot.state == s) {
+                    dot.state = DotView.State.IDLE
+                    // The DONE flash / error ring is over: apply whatever visibility is pending.
+                    reevaluateVisibility()
+                }
             }
             resetJob = job
             main.postDelayed(job, autoResetMs)

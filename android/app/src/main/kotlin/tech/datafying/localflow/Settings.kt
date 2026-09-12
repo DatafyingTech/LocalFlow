@@ -32,6 +32,15 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_SOUNDS, false)
         set(v) = prefs.edit().putBoolean(KEY_SOUNDS, v).apply()
 
+    /** Show the dot only while a text field is focused or the keyboard is up (needs the accessibility service). */
+    var showOnlyWhenTyping: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_ONLY_WHEN_TYPING, true)
+        set(v) = prefs.edit().putBoolean(KEY_SHOW_ONLY_WHEN_TYPING, v).apply()
+
+    /** The listener is held weakly by SharedPreferences: the caller must keep a reference. */
+    fun addListener(l: SharedPreferences.OnSharedPreferenceChangeListener) = prefs.registerOnSharedPreferenceChangeListener(l)
+    fun removeListener(l: SharedPreferences.OnSharedPreferenceChangeListener) = prefs.unregisterOnSharedPreferenceChangeListener(l)
+
     /** The runtime microphone prompt has been shown at least once (after two denials Android stops showing it). */
     var micAsked: Boolean
         get() = prefs.getBoolean(KEY_MIC_ASKED, false)
@@ -55,6 +64,7 @@ class Settings(context: Context) {
         private const val KEY_PRESS_ENTER = "press_enter"
         private const val KEY_HAPTICS = "haptics"
         private const val KEY_SOUNDS = "sounds"
+        const val KEY_SHOW_ONLY_WHEN_TYPING = "show_only_when_typing"
         private const val KEY_MIC_ASKED = "mic_asked"
         private const val KEY_DOT_X = "dot_x"
         private const val KEY_DOT_Y = "dot_y"

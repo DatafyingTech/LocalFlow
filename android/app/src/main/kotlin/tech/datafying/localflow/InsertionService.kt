@@ -32,6 +32,21 @@ class InsertionService : AccessibilityService() {
         var instance: InsertionService? = null
             private set
 
+        /**
+         * Last known "the user can type right now": an editable node has input focus or a keyboard
+         * window is showing. Only meaningful while [instance] is non-null.
+         */
+        @Volatile
+        var canType: Boolean = false
+            private set
+
+        /**
+         * Called (on the accessibility service's thread) whenever [canType] is recomputed, and with
+         * false when the service goes away. OverlayService sets this and posts to its main handler.
+         */
+        @Volatile
+        var canTypeListener: ((Boolean) -> Unit)? = null
+
         /** True when the user has switched the service on in Settings > Accessibility. */
         fun isEnabled(context: Context): Boolean {
             val id = "${context.packageName}/${InsertionService::class.java.name}"
@@ -45,20 +60,57 @@ class InsertionService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        publishCanType()
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        publishCanType(false)
         super.onDestroy()
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         if (instance === this) instance = null
+        publishCanType(false)
         return super.onUnbind(intent)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* we only act on demand */ }
+    /**
+     * Text insertion itself is on demand; events are only used to track whether the user can type
+     * (which is what decides if the dot is shown). The event types come from
+     * res/xml/accessibility_service_config.xml.
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        when (event?.eventType) {
+            AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> publishCanType()
+            else -> {}
+        }
+    }
+
     override fun onInterrupt() {}
+
+    /** Recomputes [canType] (or takes [forced]) and tells the listener when it changed. */
+    private fun publishCanType(forced: Boolean? = null) {
+        val now = forced ?: computeCanType()
+        val changed = now != canType
+        canType = now
+        if (changed || forced != null) {
+            try { canTypeListener?.invoke(now) } catch (e: Exception) { Log.w(TAG, "canType listener", e) }
+        }
+    }
+
+    private fun computeCanType(): Boolean = try {
+        focusedEditable() || windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+    } catch (e: Exception) {
+        Log.d(TAG, "computeCanType", e)
+        false
+    }
+
+    private fun focusedEditable(): Boolean = findFocusedNode()?.isEditable == true
 
     /** Package name of the app the user is dictating into, for the API's `app` field. */
     fun focusedPackage(): String? = try {
