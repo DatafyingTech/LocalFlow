@@ -150,6 +150,12 @@ dot only when a text field is active* in the app; the change applies immediately
 Every state change gives a small haptic tick (switch it off in the app). Sounds are off by
 default.
 
+**First dictation after a pause.** The PC unloads its cleanup model after about 10 idle minutes
+to free the GPU, so the first dictation after a pause can take a few extra seconds while it
+reloads. The app now pre-warms the PC when you tap into a text field and again the moment you
+start recording, so you will rarely notice. If it still happens and the ring turns red, hold to
+talk again while the ring is red and it retries.
+
 Between two hands-free results the phone inserts a single space unless the text already ends in
 a space or a newline. After push-to-talk it never adds trailing whitespace, so you can keep typing.
 

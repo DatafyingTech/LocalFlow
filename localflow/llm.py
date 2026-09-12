@@ -163,6 +163,32 @@ class OllamaClient:
             return self.last_ok == 0.0
         return self.last_ok == 0.0 or (time.monotonic() - self.last_ok) > max(0.0, ka - margin_s)
 
+    def is_loaded(self, model: str | None = None) -> bool | None:
+        """Ask Ollama whether the model is resident right now (GET /api/ps). None = unknown."""
+        model = model or self.model
+        try:
+            r = self.session.get(f"{self.host}/api/ps", timeout=1.0)
+            r.raise_for_status()
+            names = {m.get("name") or m.get("model") for m in (r.json().get("models") or [])}
+            return any(n and (n == model or n.split(":")[0] == model.split(":")[0]) for n in names)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def warm_now(self, level: str = "light") -> bool:
+        """Start a background warmup regardless of the idle timer (returns False if one is running)."""
+        if not self._warm_lock.acquire(blocking=False):
+            return False
+
+        def _run():
+            try:
+                ms = self.warmup(level=level if level in LEVEL_RULES else "light")
+                log.info("LLM %s warmed on request in %.0f ms", self.model, ms)
+            finally:
+                self._warm_lock.release()
+
+        threading.Thread(target=_run, name="llm-warm", daemon=True).start()
+        return True
+
     def warm_if_idle(self, level: str = "light") -> None:
         """Fire a warmup in a background thread when the model may have been unloaded.
 

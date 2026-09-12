@@ -759,7 +759,8 @@ class App:
         self._ensure_token()
         try:
             self.server = DictationServer(
-                scfg, pipeline=self.dictate_remote, status=self.server_status, lock=self._pipe_lock,
+                scfg, pipeline=self.dictate_remote, status=self.server_status, warm=self.warm_remote,
+                lock=self._pipe_lock,
                 max_seconds=float(self.cfg["audio"].get("max_seconds", 1200)),
             )
             self.server.start()
@@ -767,6 +768,23 @@ class App:
             log.error("phone API failed to start on %s:%s: %s", scfg.get("bind"), scfg.get("port"), e)
             self.server = None
             self.tray.notify(f"Phone access could not start: {e}", "LocalFlow")
+
+    def warm_remote(self) -> dict:
+        """The phone started recording: reload the cleanup model in the background if it was
+        unloaded after idling, exactly as the desktop does on hotkey key-down."""
+        loaded = True
+        if self.llm is not None and self.llm_ok:
+            try:
+                level = self.cfg["cleanup"].get("handsfree_level", "high")
+                resident = self.llm.is_loaded()  # ask Ollama; the idle timer can be wrong
+                loaded = bool(resident) if resident is not None else not self.llm.needs_warm()
+                if not loaded:
+                    self.llm.warm_now(level=level)
+                else:
+                    self.llm.warm_if_idle(level=level)
+            except Exception as e:  # noqa: BLE001
+                log.debug("warm_remote: %s", e)
+        return {"llm_loaded": loaded}
 
     def stop_server(self) -> None:
         srv, self.server = self.server, None

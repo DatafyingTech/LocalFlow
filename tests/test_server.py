@@ -332,3 +332,69 @@ def test_404_elsewhere(api):
     s, _ = api
     assert _call(s, "/v1/nope")[0] == 404
     assert _call(s, "/v1/nope", method="POST", body=b"x", headers={"Content-Type": "audio/wav"})[0] == 404
+
+
+# ------------------------------------------------------------------ /v1/warm
+def _warm_server(ready=True, paused=False, warm=None):
+    import localflow.server as srv
+    calls = []
+
+    def _warm():
+        calls.append(1)
+        return {"llm_loaded": False}
+
+    s = srv.DictationServer(
+        {"enabled": True, "port": 0, "token": "tok", "bind": "127.0.0.1", "tailscale_serve": False},
+        pipeline=lambda *a, **k: None,
+        status=lambda: {"ready": ready, "paused": paused, "version": "t", "engine": "fake",
+                        "gpu": False, "llm": None, "llm_ok": False},
+        warm=warm if warm is not None else _warm,
+    )
+    s.start()
+    return s, calls
+
+
+def test_warm_requires_token():
+    import urllib.request, urllib.error
+    s, calls = _warm_server()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{s.port}/v1/warm", data=b"", method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            assert False, "expected 401"
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        assert calls == []
+    finally:
+        s.stop()
+
+
+def test_warm_calls_back_and_reports_state():
+    import json, urllib.request
+    s, calls = _warm_server()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{s.port}/v1/warm", data=b"", method="POST",
+                                     headers={"Authorization": "Bearer tok"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            j = json.load(r)
+        assert j == {"warming": True, "llm_loaded": False, "ready": True}
+        assert calls == [1]
+    finally:
+        s.stop()
+
+
+def test_warm_503_when_not_ready_or_paused():
+    import urllib.request, urllib.error
+    for kw in ({"ready": False}, {"paused": True}):
+        s, calls = _warm_server(**kw)
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{s.port}/v1/warm", data=b"", method="POST",
+                                         headers={"Authorization": "Bearer tok"})
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                assert False, "expected 503"
+            except urllib.error.HTTPError as e:
+                assert e.code == 503
+            assert calls == []
+        finally:
+            s.stop()

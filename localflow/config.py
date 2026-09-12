@@ -110,7 +110,7 @@ DEFAULTS: dict[str, Any] = {
         "handsfree_timeout_ms": 60000,  # a long speech gets a long timeout; correctness over speed
         "num_ctx": 8192,  # model context; 8192 covers ~25 min of speech in one hands-free session
         "segment_words": 400,  # long texts are cleaned in sentence-aligned segments of about this size
-        "keep_alive": 600,  # seconds the model stays in VRAM after a call (-1 = forever); re-warmed on PTT press
+        "keep_alive": 1800,  # seconds the model stays in VRAM after a call (-1 = forever); re-warmed on PTT press
         "temperature": 0,
     },
     "inject": {

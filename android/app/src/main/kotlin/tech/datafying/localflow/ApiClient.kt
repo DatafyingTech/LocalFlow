@@ -52,6 +52,8 @@ class ApiClient(private val settings: Settings) {
         private const val CONNECT_S = 5L
         private const val READ_PTT_S = 30L
         private const val READ_HANDSFREE_S = 120L
+        private const val WARM_CONNECT_S = 2L
+        private const val WARM_READ_S = 3L
         private val WAV = "audio/wav".toMediaType()
 
         const val MSG_URL_BLANK = "No PC address set. Paste the setup line from your PC."
@@ -142,6 +144,32 @@ class ApiClient(private val settings: Settings) {
             audioSeconds = j.optDouble("audio_s", 0.0),
             totalMs = timings?.optDouble("total_ms", 0.0) ?: 0.0,
         )
+    }
+
+    /**
+     * POST /v1/warm: ask the PC to start reloading its cleanup model now, so the reload hides
+     * behind the user speaking instead of delaying the first result after an idle spell.
+     * Fire-and-forget: short timeouts, and every failure (including a missing endpoint on an
+     * older PC build) is swallowed. Never throws, never changes any state.
+     */
+    fun warm() {
+        try {
+            val url = baseUrl().newBuilder().addPathSegments("v1/warm").build()
+            val req = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer ${settings.token}")
+                .header("User-Agent", userAgent())
+                .post(ByteArray(0).toRequestBody(null))
+                .build()
+            val c = client.newBuilder()
+                .connectTimeout(WARM_CONNECT_S, TimeUnit.SECONDS)
+                .readTimeout(WARM_READ_S, TimeUnit.SECONDS)
+                .writeTimeout(WARM_READ_S, TimeUnit.SECONDS)
+                .build()
+            c.newCall(req).execute().close()
+        } catch (ignored: Exception) {
+            // Best effort only; the dictation call reports real problems.
+        }
     }
 
     private fun <T> execute(c: OkHttpClient, req: Request, handle: (Int, String) -> T): T {

@@ -2,7 +2,7 @@
 
 The contract is docs/API.md. Standard library only (http.server); the server binds to
 127.0.0.1 and is reached from a phone through `tailscale serve`, which proxies port 80 on the
-PC's MagicDNS name to it. Bearer-token auth on /v1/dictate; /v1/health and / are open.
+PC's MagicDNS name to it. Bearer-token auth on /v1/dictate and /v1/warm; /v1/health and / are open.
 
 The server owns no model state. It is given three callables so it is testable without a GPU:
 
@@ -227,6 +227,38 @@ class _Handler(BaseHTTPRequestHandler):
                 break
             n -= len(chunk)
 
+    def _warm(self) -> None:
+        """POST /v1/warm: the phone is about to send audio; reload the cleanup model now.
+
+        Mirrors the desktop, which re-warms on hotkey key-down so the reload overlaps with the
+        user speaking. Returns immediately; the reload runs in the background on the PC.
+        """
+        self._drain()
+        if not self._authed():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="LocalFlow"')
+            body = b'{"error": "missing or wrong token"}'
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        st = self.api.status()
+        if not st.get("ready"):
+            self._error(503, "PC is not ready yet")
+            return
+        if st.get("paused"):
+            self._error(503, "PC is paused (Pause (free GPU) in the tray menu)")
+            return
+        info = {}
+        if self.api.warm is not None:
+            try:
+                info = self.api.warm() or {}
+            except Exception as e:  # noqa: BLE001
+                log.warning("warm callback failed: %s", e)
+        self._json(200, {"warming": True, "llm_loaded": bool(info.get("llm_loaded", False)),
+                         "ready": True})
+
     # -- routes
     def do_HEAD(self):
         self.do_GET()
@@ -263,6 +295,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlsplit(self.path)
+        if u.path.rstrip("/") == "/v1/warm":
+            self._warm()
+            return
         if u.path.rstrip("/") != "/v1/dictate":
             self._drain()
             self._error(404, "not found")
@@ -391,6 +426,7 @@ class DictationServer:
         *,
         pipeline: Callable[[np.ndarray, str, str | None, str], Any],
         status: Callable[[], dict],
+        warm: "Callable[[], dict] | None" = None,
         lock: "threading.Lock | None" = None,
         max_seconds: float = 1200.0,
         tailscale_exe: str = TAILSCALE_EXE,
@@ -404,6 +440,7 @@ class DictationServer:
         self.tailscale_exe = tailscale_exe
         self.pipeline = pipeline
         self.status = status
+        self.warm = warm
         self.lock = lock or threading.Lock()
         self.max_seconds = float(max_seconds)
         self.public_url: str | None = None

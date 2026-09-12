@@ -22,6 +22,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -62,6 +63,8 @@ class OverlayService : Service(), View.OnTouchListener {
         private const val ERROR_MS = 2500L
         /** Focus hops between fields (and keyboard show/hide) within this window do not blink the dot. */
         private const val HIDE_DEBOUNCE_MS = 350L
+        /** Minimum gap between focus-triggered /v1/warm calls (recording start is not limited). */
+        private const val FOCUS_WARM_INTERVAL_MS = 60_000L
 
         @Volatile
         var isRunning: Boolean = false
@@ -345,8 +348,30 @@ class OverlayService : Service(), View.OnTouchListener {
 
     // ------------------------------------------------------------------ visibility
     private fun onCanType(v: Boolean) {
+        val gainedFocus = v && !canType
         canType = v
         reevaluateVisibility()
+        // A text field just gained focus: the user is likely about to dictate, so nudge the PC
+        // to reload its cleanup model now (rate-limited; harmless when already loaded).
+        if (gainedFocus) warmPc(force = false)
+    }
+
+    // ------------------------------------------------------------------ pre-warm
+    private var lastFocusWarmMs = 0L
+
+    /**
+     * Fire-and-forget POST /v1/warm on the network thread. [force] skips the 60 s rate limit
+     * (used when recording actually starts). Silent when the app is not connected yet.
+     */
+    private fun warmPc(force: Boolean) {
+        if (settings.serverUrl.isBlank() || settings.token.isBlank()) return
+        if (!force) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastFocusWarmMs < FOCUS_WARM_INTERVAL_MS) return
+            lastFocusWarmMs = now
+        }
+        if (!::api.isInitialized) return
+        worker.execute { api.warm() }
     }
 
     private fun wantVisible(): Boolean = DotVisibility.decide(
@@ -475,6 +500,7 @@ class OverlayService : Service(), View.OnTouchListener {
             )
             return
         }
+        warmPc(force = true)   // hide the PC's model reload behind the user speaking
         ensureMicType()
         val rec = Recorder(
             maxMillis = HANDSFREE_MAX_MS,

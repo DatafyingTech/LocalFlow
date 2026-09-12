@@ -16,7 +16,7 @@ Both are built against it. Change it here first.
 | Reached at | `http://<pc-name>.<tailnet>.ts.net` via `tailscale serve`, which proxies port 80 to 8770 |
 | Example | `http://localflow-pc.tail1234.ts.net` (your own tailnet name; `tailscale status` on the PC shows it) |
 | Enabled by | `server.enabled: true` in `config.yaml` (off by default) |
-| Auth | `Authorization: Bearer <server.token>` on every `/v1/*` call except `/v1/health` |
+| Auth | `Authorization: Bearer <server.token>` on `/v1/dictate` and `/v1/warm`; `/v1/health` is open |
 
 The token is generated on first enable, stored in `config.yaml`, and shown in the tray menu under
 **Phone setup**. Use the MagicDNS name, not the raw 100.x IP: `tailscale serve` routes by
@@ -44,6 +44,20 @@ No auth. For the phone's "Test connection" button and for the status page.
 ```
 
 `ready` is false while models are still loading; the phone should show "PC is warming up" and retry.
+
+### `POST /v1/warm`
+Auth required, empty body. Call it the moment recording starts. The PC unloads its cleanup model
+after idling (`llm.keep_alive`, 10 minutes by default) and reloading takes several seconds; this
+starts that reload in the background so it overlaps with the user speaking, exactly what the
+desktop hotkey does on key-down. Returns immediately. Cheap and harmless when the model is already
+loaded, so the phone may also call it when a text field gains focus.
+
+```json
+{ "warming": true, "llm_loaded": false, "ready": true }
+```
+
+`llm_loaded` is the state before this call. Errors: 401 bad token; 503 while models are loading
+or the PC is paused.
 
 ### `POST /v1/dictate`
 Auth required. Send audio, get text.

@@ -4,6 +4,16 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-09-12
+
+### Added
+
+- `POST /v1/warm` on the phone API. The PC unloads its cleanup model after idling and reloading
+  it takes several seconds; the desktop hides that behind the hotkey key-down, but a phone gave
+  the PC no such signal, so the first dictation after a pause waited 4 to 9 s. The phone app
+  (0.1.3) now calls this the moment recording starts and when a text field gains focus, so the
+  reload overlaps with speaking. Contract in `docs/API.md`.
+
 ## [0.2.0] - 2026-09-11
 
 ### Added

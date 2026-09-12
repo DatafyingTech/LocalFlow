@@ -73,7 +73,7 @@ def test_defaults():
     assert DEFAULTS["inject"]["scancode_newlines"] is False
     assert DEFAULTS["ui"]["hide_when_fullscreen"] is False
     assert DEFAULTS["gpu"]["auto_pause_fullscreen"] is False
-    assert DEFAULTS["llm"]["keep_alive"] == 600
+    assert DEFAULTS["llm"]["keep_alive"] == 1800
     assert (DEFAULTS["llm"]["timeout_ms"], DEFAULTS["llm"]["timeout_per_word_ms"], DEFAULTS["llm"]["timeout_max_ms"]) == (6000, 80, 20000)
     assert DEFAULTS["asr"]["gpu_mem_limit_mb"] == 3072
 

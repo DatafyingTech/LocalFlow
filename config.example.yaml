@@ -140,7 +140,7 @@ llm:
   segment_words: 400            # a long text is cleaned in sentence-aligned segments of about this
                                 #   many words, then joined. Lower it if the model is short on
                                 #   context; a segment that fails only affects itself.
-  keep_alive: 600               # seconds the model stays in VRAM after a call (-1 = forever)
+  keep_alive: 1800               # seconds the model stays in VRAM after a call (-1 = forever)
   temperature: 0
 
 # ---------------------------------------------------------------- how text is inserted
