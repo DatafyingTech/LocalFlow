@@ -101,7 +101,11 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rename release APK
-        run: cp app/build/outputs/apk/release/app-release.apk "LocalFlow-android-${GITHUB_REF_NAME//\//-}.apk"
+        # Tags are named android-vX.Y.Z; drop that prefix so the asset is LocalFlow-android-vX.Y.Z.apk
+        run: |
+          REF="${GITHUB_REF_NAME//\//-}"; REF="${REF#android-}"
+          echo "ASSET_NAME=LocalFlow-android-${REF}.apk" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/release/app-release.apk "LocalFlow-android-${REF}.apk"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -127,5 +131,5 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
-          files: android/LocalFlow-android-${{ github.ref_name }}.apk
+          files: android/${{ env.ASSET_NAME }}
           generate_release_notes: true
