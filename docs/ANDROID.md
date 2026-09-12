@@ -3,10 +3,11 @@
 A floating dot that dictates into any app on your phone, using the LocalFlow PC on your
 Tailscale network to do the transcription. Nothing leaves your own devices.
 
-> **Status.** Version 0.1.1. The app builds (`assembleDebug`, unit tests and lint pass locally
+> **Status.** Version 0.1.2. The app builds (`assembleRelease`, unit tests and lint pass locally
 > and in CI) and 0.1.0 has been run on a Samsung Galaxy S23: the dot, waveform, colours and
 > ✕/✓ work. The "only show the dot while typing" behaviour in 0.1.1 is new; if something
-> misbehaves, see [What to report](#what-to-report) at the end.
+> misbehaves, see [What to report](#what-to-report) at the end. 0.1.2 changes nothing in the
+> app itself: it is the first build signed with the permanent release key (see [Updating](#updating)).
 
 ## What you need
 
@@ -20,7 +21,7 @@ Tailscale network to do the transcription. Nothing leaves your own devices.
 
 1. On the phone, open the
    [Releases page](https://github.com/DatafyingTech/LocalFlow/releases) and download the
-   newest `LocalFlow-android-v*.apk` (or `app-debug.apk`, same file).
+   newest `LocalFlow-android-v*.apk`.
 2. Open the download. Android will say the phone is not allowed to install unknown apps from
    this source:
    - **Stock Android / Pixel:** tap *Settings* on that prompt → turn on *Allow from this source*
@@ -30,6 +31,33 @@ Tailscale network to do the transcription. Nothing leaves your own devices.
 3. Go back and tap **Install**. If Play Protect asks, choose *Install anyway*: the app is not on
    the Play Store and is signed with a development key.
 4. Open **LocalFlow**.
+
+## Updating
+
+From 0.1.2 onward every release is signed with the same permanent key, so just download the
+new APK and install it over the old one: Android treats it as an update and your Server URL,
+token, switches and dot position are kept.
+
+**If you have 0.1.0 or 0.1.1 installed, uninstall it once first** (long-press the LocalFlow
+icon → Uninstall, or Settings → Apps → LocalFlow → Uninstall). Those two builds were signed
+with throwaway keys that CI generated fresh on every run, so Android refuses to install anything
+over them ("package conflicts with an existing package"). Uninstalling wipes the app's settings,
+so after installing 0.1.2 paste the setup line again and re-grant the permissions. That is a
+one-time chore; later updates install in place.
+
+### Verify the download
+
+Every LocalFlow Android release is signed with a certificate whose SHA-256 fingerprint is
+
+```
+1c8f3986f497d89747e0981712cb4c1d4fffb741b62dedf69f2113cb925ea013
+```
+
+To check an APK before installing it, run `apksigner verify --print-certs LocalFlow-android-v*.apk`
+(apksigner is in the Android SDK's `build-tools/<version>/` folder) and compare the
+`Signer #1 certificate SHA-256 digest` line with the value above. The same line is printed in
+the "Verify the release signature" step of every CI run on GitHub, so you can also compare it
+there. A different digest means the file is not one of ours.
 
 ## Connect it to your PC
 
@@ -162,16 +190,25 @@ Open an issue at <https://github.com/DatafyingTech/LocalFlow/issues> with:
 
 ```
 cd android
-./gradlew assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleDebug          # debug-key APK at app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease        # release APK at app/build/outputs/apk/release/app-release.apk
 ./gradlew testDebugUnitTest      # WAV header, text-splice, dot-visibility and URL tests, no device needed
 ```
+
+`assembleRelease` signs with the permanent key only when `ANDROID_KEYSTORE_FILE`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` are set (as
+environment variables or Gradle `-P` properties); otherwise Gradle prints a warning and the
+release APK comes out unsigned, which is fine for local development but will not install. The
+keystore is not in the repository; CI gets it from repository secrets. Your own `assembleDebug`
+build is signed with your machine's debug key and cannot be installed over a release build.
 
 Needs JDK 17 and the Android SDK (platform 35; the build downloads build-tools 34.0.0 itself).
 On Windows use `.\gradlew.bat`, make sure `JAVA_HOME` points at the JDK 17 folder, and check
 `android/local.properties` has a plain `sdk.dir=C:/Users/you/AppData/Local/Android/Sdk` (forward
 slashes, no `%VAR%`): a malformed `sdk.dir` fails with "The filename, directory name, or volume
 label syntax is incorrect". GitHub Actions builds every push to `main` and every `android-v*`
-tag (the tag build attaches the APK to a GitHub release; `lintDebug` runs too, warnings allowed).
+tag (the tag build attaches the signed release APK to a GitHub release; `lintDebug` runs too,
+warnings allowed).
 The code is plain Kotlin views, one third-party dependency (OkHttp), and follows
 [API.md](API.md) exactly: `POST /v1/dictate` with a 16 kHz mono WAV, `mode=ptt|handsfree`,
 5 s connect / 30 s or 120 s read timeouts.
