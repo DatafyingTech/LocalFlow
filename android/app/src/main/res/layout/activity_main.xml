@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/section_pc"
+            android:textStyle="bold"
+            android:textSize="18sp" />
+
+        <EditText
+            android:id="@+id/serverUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_url"
+            android:inputType="textUri"
+            android:importantForAutofill="no"
+            android:singleLine="true" />
+
+        <EditText
+            android:id="@+id/token"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_token"
+            android:inputType="textVisiblePassword|textNoSuggestions"
+            android:importantForAutofill="no"
+            android:singleLine="true" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/pasteSetup"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/btn_paste_setup" />
+
+            <Button
+                android:id="@+id/testConnection"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/btn_test" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/connectionStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:paddingBottom="12dp"
+            android:text="@string/status_not_tested" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/section_permissions"
+            android:textStyle="bold"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="6dp"
+            android:text="@string/permissions_help" />
+
+        <LinearLayout style="@style/PermRow">
+            <TextView android:id="@+id/permMicText" style="@style/PermText" />
+            <Button android:id="@+id/permMicBtn" style="@style/PermBtn" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/PermRow">
+            <TextView android:id="@+id/permOverlayText" style="@style/PermText" />
+            <Button android:id="@+id/permOverlayBtn" style="@style/PermBtn" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/PermRow">
+            <TextView android:id="@+id/permAccessText" style="@style/PermText" />
+            <Button android:id="@+id/permAccessBtn" style="@style/PermBtn" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/PermRow">
+            <TextView android:id="@+id/permNotifText" style="@style/PermText" />
+            <Button android:id="@+id/permNotifBtn" style="@style/PermBtn" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/PermRow">
+            <TextView android:id="@+id/permBatteryText" style="@style/PermText" />
+            <Button android:id="@+id/permBatteryBtn" style="@style/PermBtn" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="@string/section_dot"
+            android:textStyle="bold"
+            android:textSize="18sp" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/showDot"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingVertical="10dp"
+            android:text="@string/switch_show_dot" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/pressEnter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingVertical="10dp"
+            android:text="@string/switch_press_enter" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/haptics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingVertical="10dp"
+            android:text="@string/switch_haptics" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/sounds"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingVertical="10dp"
+            android:text="@string/switch_sounds" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:textSize="13sp"
+            android:text="@string/how_to" />
+
+        <TextView
+            android:id="@+id/versionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:textSize="12sp"
+            android:alpha="0.6" />
+    </LinearLayout>
+</ScrollView>

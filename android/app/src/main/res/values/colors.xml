@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same palette as localflow/ui.py so the phone dot matches the desktop Flow Dot. -->
+    <color name="dot_bg">#1F2937</color>
+    <color name="dot_idle">#6B7280</color>
+    <color name="dot_listening">#EF4444</color>
+    <color name="dot_handsfree">#F97316</color>
+    <color name="dot_processing">#3B82F6</color>
+    <color name="dot_done">#22C55E</color>
+    <color name="dot_error">#EF4444</color>
+    <color name="icon_bg">#111827</color>
+</resources>

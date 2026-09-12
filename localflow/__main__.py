@@ -13,9 +13,11 @@ import os
 import platform
 import queue
 import re
+import secrets
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -29,6 +31,27 @@ from .ui import FlowBar, Tray, beep
 
 log = logging.getLogger("localflow")
 LOG_PATH = config.PROJECT_DIR / "localflow.log"
+
+
+class ASRError(RuntimeError):
+    """The speech engine raised while transcribing (wrapped so callers can tell it apart)."""
+
+
+@dataclass
+class PipelineResult:
+    """What one utterance became. `empty` means there is nothing to paste (dropped clip, silence,
+    or cleanup removed everything); `reason` says which, for the log."""
+
+    text: str = ""
+    raw: str = ""
+    level: str = ""
+    llm_used: bool = False
+    press_enter: bool = False
+    empty: bool = False
+    audio_s: float = 0.0
+    timings: dict = field(default_factory=lambda: {"asr_ms": 0.0, "rules_ms": 0.0, "llm_ms": 0.0, "total_ms": 0.0})
+    reason: str = ""
+    snippet_fired: bool = False
 
 
 def setup_logging(debug: bool) -> None:
@@ -94,6 +117,10 @@ class App:
             is_handsfree=lambda: self.handsfree,
         )
         self._queue: queue.Queue = queue.Queue()
+        # one utterance at a time through ASR + LLM: the worker below and the phone API share it
+        self._pipe_lock = threading.Lock()
+        self.server = None  # localflow.server.DictationServer while phone access is on
+        cfg.setdefault("server", {})
         self._worker = threading.Thread(target=self._worker_loop, name="pipeline", daemon=True)
         self._worker.start()
         self._level_thread = None
@@ -137,6 +164,9 @@ class App:
             ("check", "Auto-pause in fullscreen apps", lambda: bool(self.cfg["gpu"].get("auto_pause_fullscreen", False)), self.toggle_auto_pause),
             ("check", "Show Flow Bar", lambda: self.pill.enabled, self.toggle_overlay),
             ("check", "Sounds", lambda: bool(self.cfg["ui"].get("sounds", True)), self.toggle_sounds),
+            ("sep",),
+            ("check", "Enable phone access", lambda: bool(self.cfg["server"].get("enabled", False)), self.toggle_server),
+            ("cmd", "Phone setup", self.phone_setup),
             ("sep",),
             ("cmd", "Open config.yaml", lambda: os.startfile(str(self.cfg_path))),
             ("cmd", "Open history", self.open_history),
@@ -503,7 +533,8 @@ class App:
         while True:
             audio, polish, from_handsfree = self._queue.get()
             try:
-                self._process(audio, polish, from_handsfree)
+                with self._pipe_lock:
+                    self._process(audio, polish, from_handsfree)
             except Exception:
                 log.exception("pipeline failed")
                 self.set_state("error")
@@ -523,55 +554,59 @@ class App:
         else:
             self.set_state("done" if ok else "error")
 
-    def _process(self, audio, polish: bool = False, from_handsfree: bool = False) -> None:
-        t_release = time.perf_counter()
+    def run_pipeline(self, audio, *, mode: str = "ptt", level_override: str | None = None, app_title: str = "") -> PipelineResult:
+        """Audio -> text, with no side effects (no state change, injection, history or log line).
+
+        mode: "ptt" (one phrase, cleaned at cleanup.level / per_app for `app_title`),
+              "polish" (the polish hotkey: llm.polish at level high),
+              "handsfree" (a whole speech: llm.cleanup_long at cleanup.handsfree_level, in
+              sentence-aligned segments with the rules Backtrack as per-segment fallback).
+        `level_override` replaces the mode's level. Raises ASRError if the engine fails.
+        """
+        t0 = time.perf_counter()
+        ccfg = self.cfg["cleanup"]
+        res = PipelineResult(audio_s=round(len(audio) / self.recorder.sr, 2))
         ok, why = self.recorder.is_usable(audio)
         if not ok:
-            log.info("clip dropped: %s", why)
-            if not self.handsfree:
-                self.set_state("idle")
-            return
-        if not self.handsfree:
-            self.set_state("processing")
-        title = inject.foreground_window_title()
-        ccfg, icfg = self.cfg["cleanup"], self.cfg["inject"]
+            res.empty, res.reason = True, f"dropped: {why}"
+            res.timings["total_ms"] = (time.perf_counter() - t0) * 1000
+            return res
         try:
             t = time.perf_counter()
             raw = self.engine.transcribe(self.recorder.prepare(audio))
             ms_asr = (time.perf_counter() - t) * 1000
-        except Exception:
-            log.exception("ASR failed")
-            self._after_state(ok=False)
-            beep("error", self._sounds())
-            return
+        except Exception as e:
+            raise ASRError(str(e)) from e
+        res.raw = raw or ""
+        res.timings["asr_ms"] = ms_asr
         if not raw or not re.search(r"\w", raw):
             # silence / breath noise: the ASR returns nothing (or just punctuation) -> drop quietly
-            log.debug("empty transcription (%s): %r", why, raw)
-            if self.handsfree:
-                self.set_state("handsfree")
-            else:
-                self.set_state("idle")
-            return
+            res.empty, res.reason = True, f"silence ({why})"
+            res.timings["total_ms"] = (time.perf_counter() - t0) * 1000
+            return res
 
-        # `polish` is False (normal), True (polish hotkey) or a level name: a whole hands-free
-        # speech, cleaned at cleanup.handsfree_level in sentence-aligned segments.
-        whole_speech = isinstance(polish, str)
-        if whole_speech:
-            level = polish
+        whole_speech = mode == "handsfree"
+        polish = mode == "polish"
+        if level_override:
+            level = level_override
+        elif whole_speech:
+            level = ccfg.get("handsfree_level", "high")
         elif polish:
             level = "high"
         else:
-            level = self._level_for_window(title)
+            level = self._level_for_window(app_title)
+        res.level = level
         use_llm = level != "none" and self.llm_ok
         t = time.perf_counter()
         # with the LLM on, self-corrections (Backtrack) and list formatting are left to the model;
         # the rules versions run afterwards only if the LLM fails or times out
-        res = cleanup.clean(raw, ccfg, defer_lists=use_llm, defer_backtrack=use_llm)
+        cr = cleanup.clean(raw, ccfg, defer_lists=use_llm, defer_backtrack=use_llm)
         ms_rules = (time.perf_counter() - t) * 1000
-        text = res.text
+        text = cr.text
+        res.press_enter, res.snippet_fired = cr.press_enter, cr.snippet_fired
 
         ms_llm, used = 0.0, False
-        if text and use_llm and not res.snippet_fired:
+        if text and use_llm and not cr.snippet_fired:
             if whole_speech:
                 out = self.llm.cleanup_long(text, level, fallback=lambda s: cleanup.apply_backtrack(s, ccfg)[0])
             elif polish:
@@ -589,15 +624,57 @@ class App:
             ms_rules += (time.perf_counter() - t2) * 1000
             if n_bt:
                 log.debug("rules Backtrack fallback removed %d clause(s)", n_bt)
-        if use_llm and text and not res.snippet_fired and ccfg.get("auto_lists", True):
+        if use_llm and text and not cr.snippet_fired and ccfg.get("auto_lists", True):
             # rules-based list formatting: the LLM fallback path, or an LLM output that left a
             # clear enumeration inline (auto_list never touches text that already has bullets)
             text, _ = cleanup.auto_list(text, ccfg.get("list_leadins"))
 
+        res.text, res.llm_used = text, used
+        res.timings.update(asr_ms=ms_asr, rules_ms=ms_rules, llm_ms=ms_llm, total_ms=(time.perf_counter() - t0) * 1000)
         if not text:
-            log.info("nothing to paste after cleanup (raw=%r)", raw)
-            self._after_state()
+            res.empty, res.reason = True, "cleaned away"
+        return res
+
+    def _process(self, audio, polish: bool = False, from_handsfree: bool = False) -> None:
+        t_release = time.perf_counter()
+        ok, why = self.recorder.is_usable(audio)
+        if not ok:
+            log.info("clip dropped: %s", why)
+            if not self.handsfree:
+                self.set_state("idle")
             return
+        if not self.handsfree:
+            self.set_state("processing")
+        title = inject.foreground_window_title()
+        icfg = self.cfg["inject"]
+        # `polish` is False (normal), True (polish hotkey) or a level name: a whole hands-free
+        # speech, cleaned at cleanup.handsfree_level in sentence-aligned segments.
+        if isinstance(polish, str):
+            mode, level_override = "handsfree", polish
+        elif polish:
+            mode, level_override = "polish", None
+        else:
+            mode, level_override = "ptt", None
+        try:
+            res = self.run_pipeline(audio, mode=mode, level_override=level_override, app_title=title)
+        except ASRError:
+            log.exception("ASR failed")
+            self._after_state(ok=False)
+            beep("error", self._sounds())
+            return
+        if res.empty:
+            if res.reason.startswith("silence"):
+                log.debug("empty transcription (%s): %r", why, res.raw)
+                if self.handsfree:
+                    self.set_state("handsfree")
+                else:
+                    self.set_state("idle")
+            else:
+                log.info("nothing to paste after cleanup (raw=%r)", res.raw)
+                self._after_state()
+            return
+        text, raw, level, used = res.text, res.raw, res.level, res.llm_used
+        ms_asr, ms_rules, ms_llm = res.timings["asr_ms"], res.timings["rules_ms"], res.timings["llm_ms"]
 
         method = inject.resolve_method(
             icfg.get("method", "auto"), icfg.get("type_apps"), force_scancode=bool(icfg.get("force_scancode", False))
@@ -632,6 +709,143 @@ class App:
             self.tray.notify("Paste failed — the text is on your clipboard (Ctrl+V).")
         self._after_state(ok=pasted)
 
+    # ------------------------------------------------------------------ phone API
+    def dictate_remote(self, audio, mode: str, level: str | None, app: str) -> PipelineResult:
+        """Server entry point (called under self._pipe_lock by the server): pipeline + history + log."""
+        res = self.run_pipeline(audio, mode=mode, level_override=level, app_title=app)
+        if res.empty:
+            log.info("phone %s (%s): %s", app, mode, res.reason)
+            res.raw = ""  # contract: raw is empty alongside text when nothing was said
+            return res
+        t = res.timings
+        self.history.append(
+            res.raw, res.text, t["asr_ms"], t["llm_ms"], ms_rules=round(t["rules_ms"], 2), ms_total=round(t["total_ms"], 1),
+            level=res.level, llm_used=res.llm_used, press_enter=res.press_enter, handsfree=(mode == "handsfree"),
+            app=app[:80], audio_s=res.audio_s,
+        )
+        log.info(
+            "%.1fs audio | asr %.0f ms | rules %.1f ms | llm %.0f ms (%s, %s) | phone %s (%s) | total %.0f ms | %r",
+            res.audio_s, t["asr_ms"], t["rules_ms"], t["llm_ms"], res.level, "used" if res.llm_used else "skipped",
+            app, mode, t["total_ms"], res.text if self.debug else res.text[:60],
+        )
+        return res
+
+    def server_status(self) -> dict:
+        return {
+            "version": __version__,
+            "engine": getattr(self.engine, "name", self.cfg["asr"].get("engine", "")),
+            "gpu": bool(self.engine is not None and self.engine.on_gpu()),
+            "llm": self.llm.model,
+            "llm_ok": self.llm_ok,
+            "ready": self.ready,
+            "paused": self.paused,
+        }
+
+    def _ensure_token(self) -> str:
+        scfg = self.cfg["server"]
+        if not scfg.get("token"):
+            scfg["token"] = secrets.token_urlsafe(24)  # 32 chars
+            self.save_cfg()
+            log.info("phone API token created and saved to %s", self.cfg_path.name)
+        return scfg["token"]
+
+    def start_server(self) -> None:
+        """Start the phone API thread (idempotent). Never blocks: tailscale setup runs in the background."""
+        if self.server is not None:
+            return
+        from .server import DictationServer
+
+        scfg = self.cfg["server"]
+        self._ensure_token()
+        try:
+            self.server = DictationServer(
+                scfg, pipeline=self.dictate_remote, status=self.server_status, lock=self._pipe_lock,
+                max_seconds=float(self.cfg["audio"].get("max_seconds", 1200)),
+            )
+            self.server.start()
+        except Exception as e:
+            log.error("phone API failed to start on %s:%s: %s", scfg.get("bind"), scfg.get("port"), e)
+            self.server = None
+            self.tray.notify(f"Phone access could not start: {e}", "LocalFlow")
+
+    def stop_server(self) -> None:
+        srv, self.server = self.server, None
+        if srv is not None:
+            srv.stop()
+
+    def toggle_server(self) -> None:
+        on = not self.cfg["server"].get("enabled", False)
+        self.cfg["server"]["enabled"] = on
+        self.save_cfg()
+        log.info("phone access -> %s", "on" if on else "off")
+        if on:
+            self.start_server()
+        else:
+            self.stop_server()
+
+    def phone_setup(self) -> None:
+        """Small dialog with the URL, the token and a "Copy setup line" button (URL|TOKEN)."""
+        token = self._ensure_token()
+        enabled = bool(self.cfg["server"].get("enabled", False))
+        port = int(self.cfg["server"].get("port", 8770))
+        url = (self.server.public_url if self.server else None) or ""
+        if not url:
+            from .server import tailscale_available, tailscale_dnsname
+
+            name = tailscale_dnsname() if tailscale_available() else None
+            url = f"http://{name}" if name else f"http://127.0.0.1:{port}"
+        note = "" if enabled else 'Phone access is OFF: tick "Enable phone access" in the menu first.'
+
+        def _dialog():
+            try:
+                import tkinter as tk
+                from tkinter import ttk
+            except Exception as e:
+                log.error("tkinter unavailable for the phone setup dialog: %s", e)
+                self.tray.notify(f"{note}\nURL: {url}\nToken: {token}", "LocalFlow phone setup")
+                return
+            root = tk.Tk()
+            root.title("LocalFlow — Phone setup")
+            root.attributes("-topmost", True)
+            root.resizable(False, False)
+            frm = ttk.Frame(root, padding=14)
+            frm.grid()
+            if note:
+                ttk.Label(frm, text=note, foreground="#b45309", wraplength=420).grid(column=0, row=0, columnspan=2, sticky="w", pady=(0, 8))
+            ttk.Label(frm, text="URL").grid(column=0, row=1, sticky="w", padx=(0, 8))
+            e1 = ttk.Entry(frm, width=52)
+            e1.insert(0, url)
+            e1.configure(state="readonly")
+            e1.grid(column=1, row=1, sticky="w", pady=2)
+            ttk.Label(frm, text="Token").grid(column=0, row=2, sticky="w", padx=(0, 8))
+            e2 = ttk.Entry(frm, width=52)
+            e2.insert(0, token)
+            e2.configure(state="readonly")
+            e2.grid(column=1, row=2, sticky="w", pady=2)
+            status = ttk.Label(frm, text="Paste the setup line into the phone app. Health check: URL + /v1/health", wraplength=420)
+            status.grid(column=0, row=3, columnspan=2, sticky="w", pady=(8, 4))
+
+            def copy():
+                line = f"{url}|{token}"
+                try:
+                    import pyperclip
+
+                    pyperclip.copy(line)
+                except Exception:
+                    root.clipboard_clear()
+                    root.clipboard_append(line)
+                    root.update()
+                status.configure(text="Copied  URL|TOKEN  to the clipboard.")
+
+            btns = ttk.Frame(frm)
+            btns.grid(column=0, row=4, columnspan=2, sticky="e")
+            ttk.Button(btns, text="Copy setup line", command=copy).grid(column=0, row=0, padx=(0, 6))
+            ttk.Button(btns, text="Close", command=root.destroy).grid(column=1, row=0)
+            root.eval("tk::PlaceWindow . center")
+            root.mainloop()
+
+        threading.Thread(target=_dialog, name="phone-setup", daemon=True).start()
+
     # ------------------------------------------------------------------ shutdown
     def quit(self) -> None:
         log.info("quitting")
@@ -640,11 +854,16 @@ class App:
             self.hotkeys.stop()
             self.recorder.close()
             self.pill.stop()
+            srv, self.server = self.server, None
+            if srv is not None:
+                srv.stop(remove_tailscale=False)  # the mapping is harmless while the app is down
         finally:
             self.tray.stop()
 
     def run(self) -> None:
         self.pill.start()
+        if self.cfg["server"].get("enabled", False):
+            self.start_server()  # answers 503 until load_models sets ready
         self.tray.run(setup=self.load_models)
 
 

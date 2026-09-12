@@ -148,6 +148,14 @@ DEFAULTS: dict[str, Any] = {
         "path": "history.jsonl",
         "max_entries": 5000,
     },
+    "server": {
+        # phone API (docs/API.md): a local HTTP server the Android app reaches over Tailscale.
+        "enabled": False,  # tray: "Enable phone access"
+        "port": 8770,
+        "token": "",  # generated on first enable and saved here; tray: "Phone setup"
+        "bind": "127.0.0.1",  # never a LAN interface: `tailscale serve` is the only way in
+        "tailscale_serve": True,  # run `tailscale serve --bg --http=80 http://127.0.0.1:<port>` at startup
+    },
     "debug": False,
 }
 

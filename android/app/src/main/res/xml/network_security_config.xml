@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The PC is reached over Tailscale. The tunnel is WireGuard-encrypted end to end, so the API
+  itself is plain HTTP on a *.ts.net MagicDNS name (see docs/API.md). Two cleartext grants:
+
+  1. ts.net and every subdomain: the normal case.
+  2. App-wide (base-config): the Tailscale CGNAT range (100.64.0.0/10) cannot be expressed as
+     a host name here, and a user may type a raw 100.x address. This ONLY allows http://; it
+     does not weaken certificate validation for https:// anywhere (system trust anchors stay).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+</network-security-config>

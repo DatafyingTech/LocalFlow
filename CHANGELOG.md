@@ -4,6 +4,29 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-11
+
+### Added
+
+- **Phone access.** A small HTTP API on the PC (`server.enabled`, off by default) lets another
+  device send audio and get back the same cleaned text the desktop hotkey produces. It listens
+  only on `127.0.0.1:8770`; `tailscale serve` exposes it on your Tailscale name with no firewall
+  change. Bearer-token auth, WAV or raw PCM input with resampling, `mode=ptt` or `handsfree`,
+  the same one-at-a-time lock as the desktop path. Tray menu gains **Enable phone access** and
+  **Phone setup** (copies a `URL|TOKEN` line for the phone). Contract in `docs/API.md`.
+- **Android app** (`android/`, released separately as `android-v*` tags). A floating dot over
+  every app: hold for one phrase, tap for hands-free with a live waveform and discard/send
+  buttons, same colours as the desktop. Text is typed at the cursor through an accessibility
+  service, with clipboard fallback. Setup guide in `docs/ANDROID.md`. Compiled and unit-tested;
+  first device runs are by the community.
+- `run_pipeline` in `localflow/__main__.py`: the transcribe-and-clean pipeline as a reusable,
+  side-effect-free function shared by the hotkey path and the API.
+
+### Changed
+
+- The privacy statement now distinguishes "never leaves this machine" (default) from "never
+  leaves your own devices" (phone access on).
+
 ## [0.1.1] - 2026-09-11
 
 ### Changed

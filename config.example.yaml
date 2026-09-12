@@ -184,5 +184,15 @@ history:
   path: history.jsonl
   max_entries: 5000
 
+# ---------------------------------------------------------------- phone access (docs/API.md)
+# A small HTTP server on 127.0.0.1 only; the Android app reaches it over your Tailscale network
+# via `tailscale serve` (no firewall change, WireGuard-encrypted). Off by default.
+server:
+  enabled: false                # tray: "Enable phone access"
+  port: 8770
+  token: ''                     # generated on first enable and saved here; tray: "Phone setup"
+  bind: 127.0.0.1               # keep it loopback: tailscale serve is the only way in
+  tailscale_serve: true         # map http://<pc>.<tailnet>.ts.net -> 127.0.0.1:<port> at startup
+
 # Verbose logging (also: run.ps1 -Debug). Logs the full pasted text and LLM rejects.
 debug: false

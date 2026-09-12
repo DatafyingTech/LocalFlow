@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LocalFlow</string>
+    <string name="accessibility_service_description">LocalFlow uses this to type your dictated text into whichever text field is focused. It reads only the focused field and never sends anything off your own devices.</string>
+
+    <string name="notif_channel">Floating dot</string>
+    <string name="notif_title">LocalFlow dot is on</string>
+    <string name="notif_text">Tap the dot to dictate, hold it for push-to-talk.</string>
+    <string name="notif_stop">Stop</string>
+
+    <string name="section_pc">PC connection</string>
+    <string name="hint_url">Server URL (http://pc-name.tailnet.ts.net)</string>
+    <string name="hint_token">Token (PC tray → Phone setup)</string>
+    <string name="btn_paste_setup">Paste setup line</string>
+    <string name="btn_test">Test connection</string>
+    <string name="status_not_tested">Not tested yet.</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="permissions_help">Each one is needed for the dot to work. Tap Open, flip the switch on the system page, then come back.</string>
+
+    <string name="section_dot">The dot</string>
+    <string name="switch_show_dot">Show the dot</string>
+    <string name="switch_press_enter">Press Enter when you say “press enter”</string>
+    <string name="switch_haptics">Haptic tick on state changes</string>
+    <string name="switch_sounds">Sounds</string>
+
+    <string name="how_to">Hold the dot to talk (push-to-talk), release to send. Tap it once for hands-free, tap ✓ when you are done, ✕ to throw the recording away. Drag it anywhere; it snaps to the nearest edge.\n\nGrey = ready. Red = recording. Orange ring = hands-free. Blue = the PC is thinking. Green = text inserted. Red ring = something went wrong (a toast says what). If the red ring stays, the PC timed out: tap the dot to retry with the same audio.</string>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LocalFlow" parent="Theme.AppCompat.DayNight">
+        <item name="colorPrimary">@color/dot_bg</item>
+        <item name="colorPrimaryDark">@color/icon_bg</item>
+        <item name="colorAccent">@color/dot_processing</item>
+    </style>
+</resources>

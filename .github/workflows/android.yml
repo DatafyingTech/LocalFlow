@@ -1,0 +1,73 @@
+name: android
+
+on:
+  # No `paths` filter on push: a paths filter also applies to tag pushes, so a tag on a commit
+  # that did not touch android/ would never build or release. The workflow is cheap enough to
+  # run on every push to main; pull requests keep the filter.
+  push:
+    branches: [main, master]
+    tags:
+      - "android-v*"
+  pull_request:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed only for the release step on tags
+
+jobs:
+  build:
+    name: assembleDebug + lint + unit tests
+    runs-on: ubuntu-latest   # ships with the Android SDK; the build downloads platform 35 itself
+    defaults:
+      run:
+        working-directory: android
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Make the wrapper executable
+        run: chmod +x gradlew
+
+      - name: Unit tests (WAV builder, text splice)
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Lint
+        run: ./gradlew lintDebug --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "LocalFlow-${GITHUB_REF_NAME//\//-}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: android/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+      - name: Release on tag
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/LocalFlow-${{ github.ref_name }}.apk
+          generate_release_notes: true

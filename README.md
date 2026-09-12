@@ -73,6 +73,9 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
   and has a one-click **Pause (free GPU)** for gaming sessions.
 - **A dot, not a window.** A 22-pixel status dot you can drag anywhere. It never steals focus from
   whatever you're typing into.
+- **Works from your phone.** An Android app puts the same dot on your phone screen. It sends your
+  voice to your own PC over Tailscale and types the result into whatever app you are in. Your
+  desktop does the work; nothing goes to anyone else's server.
 - **Your words stay yours.** A local history file you own, and nothing else. No telemetry at all.
 
 ---
@@ -292,7 +295,9 @@ slow request never costs you the whole speech.
 ## Privacy and your data
 
 Nothing you say or type is transmitted anywhere. There is no account, no telemetry, no crash
-reporting, no update check, and no analytics of any kind. LocalFlow opens no listening socket.
+reporting, no update check, and no analytics of any kind. LocalFlow opens no listening socket
+unless you turn on phone access, and then only on the local machine for Tailscale to reach
+(see [From your phone](#from-your-phone)).
 
 Everything it writes lives in the LocalFlow folder, and that is the complete list:
 
@@ -369,6 +374,53 @@ at 500 characters, and **Enter is never pressed unless you say "press enter"**.
 That said: this is a tool for typing chat messages, not for automating gameplay. No third-party tool
 can promise how a given anti-cheat will behave, and strict kernel-level systems may simply ignore
 synthetic input. Use it for chat, and if a game's rules forbid any synthetic input, don't use it there.
+
+---
+
+## From your phone
+
+The Android app is a floating dot, like the desktop one, that dictates through your PC.
+
+![The Flow Dot in each of its states](docs/images/flow-dot-states.png)
+
+- **Long-press and hold** the dot to dictate one phrase. Release to send.
+- **Tap** it to start hands-free. It expands into a pill with a live waveform between an ✕ to
+  discard and a ✓ to send. Tap ✓ or the dot to finish.
+- The colours mean the same as on the desktop: grey idle, red listening, orange hands-free,
+  blue while your PC thinks, green when the text has landed, a red ring on an error.
+- The text is typed at the cursor of whatever field is focused, in any app. If an app blocks
+  that, it goes to the clipboard and you paste it.
+
+**How it connects.** The phone talks to a small API on the PC over
+[Tailscale](https://tailscale.com), a private network between your own devices that works from
+anywhere with a signal. The PC transcribes and cleans exactly as it does for the desktop hotkey,
+so quality is identical. Round trip from LTE measured at about 40 ms plus the usual processing,
+so well under a second per phrase.
+
+**Setup, in order:**
+
+1. Install Tailscale on the PC and on the phone, signed in with the **same** account.
+2. On the PC, right-click the dot and turn on **Enable phone access**, then open **Phone setup**
+   and press **Copy setup line**.
+3. Install the Android app from the [Releases page](https://github.com/DatafyingTech/LocalFlow/releases)
+   (the `.apk` asset of the latest `android-v*` release), open it, and press **Paste setup line**.
+4. Grant the four permissions the app asks for, in the order it asks: microphone, display over
+   other apps, the LocalFlow accessibility service, and notifications.
+5. Switch on **Show the dot**.
+
+The full guide, with the exact Settings paths on Samsung and stock Android and a
+troubleshooting list, is in [docs/ANDROID.md](docs/ANDROID.md). The API the phone uses is
+documented in [docs/API.md](docs/API.md), so you can build your own client.
+
+**What this changes about privacy.** With phone access on, audio travels between your phone and
+your PC through Tailscale, which is encrypted end to end and never sees the content. The PC API
+listens only on the local machine and is reachable only through that tunnel, with a token the PC
+generates. So the promise becomes "never leaves your own devices" rather than "never leaves this
+machine". Phone access is off by default. If the PC is asleep or off, the phone cannot dictate;
+it says so instead of failing silently.
+
+**iPhone** is not supported. iOS keyboard extensions cannot draw a floating dot or type into
+other apps the way Android's accessibility services can.
 
 ---
 
