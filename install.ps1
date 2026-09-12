@@ -31,7 +31,8 @@ param(
     [switch]$CPU,
     [switch]$SkipOllama,
     [switch]$SkipSmoke,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$FetchOnly     # download the project files next to this script and stop
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,6 +66,51 @@ Write-Host "  LocalFlow installer" -ForegroundColor White
 Write-Host "  local push-to-talk dictation - nothing leaves this machine" -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------- 1. pre-flight
+# ---------------------------------------------------------------- 0. am I inside a complete copy?
+# People save install.bat on its own, or double-click it from inside the ZIP (Explorer then runs it
+# from a temp folder with nothing else in it). Either way the rest of the project is missing and
+# every later step fails with a confusing "No such file". Detect it here and either fetch the
+# project or explain exactly what to do.
+$PROJECT_ZIP = "https://github.com/DatafyingTech/LocalFlow/archive/refs/heads/main.zip"
+$markers = @("requirements.txt", "run.bat", "localflow\__init__.py", "localflow\__main__.py")
+$missing = @($markers | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+if ($missing.Count -gt 0) {
+    Step "This folder does not contain LocalFlow yet"
+    Info "Running from: $root"
+    Info ("Missing: " + ($missing -join ", "))
+    $tmpRoot = [IO.Path]::GetTempPath().TrimEnd('\')
+    if ($root.StartsWith($tmpRoot, [StringComparison]::OrdinalIgnoreCase) -or $root -match '\\Temp\d*_.*\.zip') {
+        Die "It looks like install.bat was opened from inside the ZIP file, so Windows ran it from a temporary folder." `
+            "Right-click the ZIP, choose Extract All, open the extracted LocalFlow folder, and double-click install.bat there."
+    }
+    Info "Downloading the project so the install can continue (about 1 MB)..."
+    $zip = Join-Path $tmpRoot ("LocalFlow-" + [guid]::NewGuid().ToString("N") + ".zip")
+    $ext = $zip -replace '\.zip$', ''
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $PROJECT_ZIP -OutFile $zip -UseBasicParsing
+        Expand-Archive -Path $zip -DestinationPath $ext -Force
+        $inner = Get-ChildItem -Path $ext -Directory | Select-Object -First 1
+        if (-not $inner) { throw "the downloaded archive was empty" }
+        Copy-Item -Path (Join-Path $inner.FullName "*") -Destination $root -Recurse -Force
+        Ok "project files copied into $root"
+    } catch {
+        Die "Could not download the project: $($_.Exception.Message)" `
+            "Download it yourself: $PROJECT_ZIP - extract it, and run install.bat from inside the extracted folder."
+    } finally {
+        Remove-Item -Path $zip, $ext -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $stillMissing = @($markers | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+    if ($stillMissing.Count -gt 0) {
+        Die ("The download finished but these files are still missing: " + ($stillMissing -join ", ")) `
+            "Download $PROJECT_ZIP by hand, extract it, and run install.bat from inside the extracted folder."
+    }
+}
+if ($FetchOnly) {
+    Ok "Project files are in place. Run install.bat again (without -FetchOnly) to install."
+    exit 0
+}
+
 Step "Pre-flight checks"
 
 # --- operating system

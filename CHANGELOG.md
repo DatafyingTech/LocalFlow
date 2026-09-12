@@ -4,6 +4,16 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-09-12
+
+### Fixed
+
+- **`install.bat` run on its own, or from inside the ZIP, no longer fails with a confusing
+  "No such file or directory: requirements.txt".** The installer now checks that it is inside a
+  complete copy of the project. If the files are missing it downloads them next to itself and
+  carries on; if it was launched from inside the ZIP (Windows runs it from a temp folder), it
+  says so and tells you to extract first. `-FetchOnly` downloads the files and stops.
+
 ## [0.2.1] - 2026-09-12
 
 ### Added

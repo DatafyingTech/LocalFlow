@@ -158,7 +158,9 @@ git clone https://github.com/DatafyingTech/LocalFlow.git
 cd LocalFlow
 ```
 
-**3. Double-click `install.bat`** and wait.
+**3. Double-click `install.bat`** and wait. Run it from inside the extracted folder, not from
+inside the ZIP. If you only saved `install.bat` on its own, it fetches the rest of the project
+for you and carries on.
 
 It checks your system, creates an isolated Python environment, writes your `config.yaml`,
 downloads the speech model (~2.5 GB, one time), pulls the cleanup model, and runs a self-test.
