@@ -57,7 +57,10 @@ jobs:
             exit 0
           fi
           KS="$RUNNER_TEMP/localflow.jks"
-          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$KS"
+          # Strip any whitespace/CR the secret may carry (a Windows pipe adds CRLF); base64 -d
+          # rejects stray bytes with "invalid input".
+          printf '%s' "$ANDROID_KEYSTORE_B64" | tr -d '\r\n\t ' | base64 -d > "$KS"
+          if [ ! -s "$KS" ]; then echo "::error::keystore decoded to an empty file"; exit 1; fi
           chmod 600 "$KS"
           echo "ANDROID_KEYSTORE_FILE=$KS" >> "$GITHUB_ENV"
           echo "Keystore decoded to $KS ($(stat -c %s "$KS") bytes)"
