@@ -69,6 +69,34 @@ def model_is_cached(cfg: dict[str, Any]) -> bool:
     return any(models_dir.rglob("*.onnx"))
 
 
+class _NoTokenNag(logging.Filter):
+    localflow_hf_token_nag = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "unauthenticated requests" not in record.getMessage()
+
+
+def _quiet_hub_logging() -> None:
+    """Keep the one-time model download readable.
+
+    huggingface_hub talks to the Hub over httpx, and both log every single request at INFO -
+    about 80 lines of URLs with long signed tokens - plus an "unauthenticated requests" notice
+    that means nothing here: LocalFlow only ever reads a public model. None of that is the
+    user's business, so it is turned down to WARNING. The download progress bar is untouched.
+    """
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+    os.environ.setdefault("HF_HUB_VERBOSITY", "warning")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    # The hub also nags about anonymous downloads ("set a HF_TOKEN for higher rate limits"),
+    # twice, at WARNING. LocalFlow only ever reads one public model and never wants an account,
+    # so that one message is dropped while every other hub warning still gets through.
+    _http = logging.getLogger("huggingface_hub.utils._http")
+    if not any(getattr(f, "localflow_hf_token_nag", False) for f in _http.filters):
+        _http.addFilter(_NoTokenNag())
+
+
 def _setup_hf_cache(cfg: dict[str, Any]) -> None:
     """Point Hugging Face at .\\models and go offline *only once the model is actually there*.
 
@@ -83,11 +111,16 @@ def _setup_hf_cache(cfg: dict[str, Any]) -> None:
     os.environ.setdefault("HF_HUB_CACHE", str(models_dir / "hub"))
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    _quiet_hub_logging()
     if model_is_cached(cfg):
         # cached: never phone home again, and never stall on a flaky connection
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     else:
-        log.info("ASR model not in %s yet - allowing a one-time download from Hugging Face", models_dir)
+        log.debug("ASR model not in %s yet - allowing a one-time download from Hugging Face", models_dir)
+        try:
+            print("Downloading the speech model (about 2.5 GB). This happens once.", flush=True)
+        except Exception:  # noqa: BLE001 - no console (pythonw): the progress bar is gone too
+            pass
 
 
 def _find_sessions(obj: Any, depth: int = 0, seen: set[int] | None = None) -> dict[str, Any]:
@@ -129,7 +162,7 @@ class ParakeetEngine(Engine):
         self._providers: dict[str, list[str]] = {}
 
     def load(self) -> None:
-        gpu.register_cuda_dlls()
+        gpu.register_cuda_dlls(cpu_mode=self.allow_cpu)
         _setup_hf_cache(self.cfg)
         import onnxruntime as ort
         import onnx_asr
@@ -145,7 +178,9 @@ class ParakeetEngine(Engine):
             msg = "CUDAExecutionProvider not available in this onnxruntime build (is onnxruntime-gpu installed?)"
             if not self.allow_cpu:
                 raise CudaNotActiveError(msg)
-            log.error(msg + " - continuing on CPU because allow_cpu_fallback=true")
+            # The user chose CPU (allow_cpu_fallback). This is the configuration working as
+            # asked, not a fault, so it must not look like one.
+            log.info(gpu.CPU_MODE_NOTE)
             want = ["CPUExecutionProvider"]
 
         so = ort.SessionOptions()
@@ -157,7 +192,8 @@ class ParakeetEngine(Engine):
             providers=want,
             sess_options=so,
         )
-        log.info("Loaded %s in %.0f ms (CUDA arena: %s)", self.model_name, (time.perf_counter() - t) * 1000, cuda_opts)
+        where = f"CUDA arena: {cuda_opts}" if want != ["CPUExecutionProvider"] else "CPU"
+        log.info("Loaded %s in %.0f ms (%s)", self.model_name, (time.perf_counter() - t) * 1000, where)
 
         self._providers = {k: list(s.get_providers()) for k, s in _find_sessions(self.model).items()}
         for k, p in self._providers.items():
@@ -170,7 +206,7 @@ class ParakeetEngine(Engine):
             msg = f"ONNX Runtime fell back to CPU for sessions {cpu_only} (cuDNN/cuBLAS DLLs missing?)"
             if not self.allow_cpu:
                 raise CudaNotActiveError(msg)
-            log.error(msg)
+            log.info("%s - %s", gpu.CPU_MODE_NOTE, msg)
 
     def providers(self) -> dict[str, list[str]]:
         return dict(self._providers)
@@ -195,7 +231,7 @@ class WhisperEngine(Engine):
         self._providers: dict[str, list[str]] = {}
 
     def load(self) -> None:
-        gpu.register_cuda_dlls()
+        gpu.register_cuda_dlls(cpu_mode=self.allow_cpu)
         _setup_hf_cache(self.cfg)
         import ctranslate2
         from faster_whisper import WhisperModel
@@ -203,8 +239,10 @@ class WhisperEngine(Engine):
         cuda_n = ctranslate2.get_cuda_device_count()
         log.info("ctranslate2 %s cuda devices: %d", ctranslate2.__version__, cuda_n)
         device = "cuda" if cuda_n > 0 else "cpu"
-        if device == "cpu" and not self.allow_cpu:
-            raise CudaNotActiveError("CTranslate2 sees no CUDA device (CUDA/cuDNN DLLs missing?)")
+        if device == "cpu":
+            if not self.allow_cpu:
+                raise CudaNotActiveError("CTranslate2 sees no CUDA device (CUDA/cuDNN DLLs missing?)")
+            log.info(gpu.CPU_MODE_NOTE)
         t = time.perf_counter()
         self.model = WhisperModel(
             self.model_name,

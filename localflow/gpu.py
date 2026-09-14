@@ -35,10 +35,16 @@ def _site_dirs() -> list[str]:
     return out
 
 
-def register_cuda_dlls() -> list[str]:
+CPU_MODE_NOTE = "CPU mode (as configured): running without CUDA"
+
+
+def register_cuda_dlls(cpu_mode: bool = False) -> list[str]:
     """Add every site-packages/nvidia/*/bin dir to the DLL search path and PATH.
 
     Returns the list of directories registered. Safe to call more than once.
+
+    cpu_mode=True means the user asked for CPU (asr.allow_cpu_fallback), so a missing CUDA
+    runtime is the expected outcome and is reported at INFO instead of WARNING.
     """
     if _registered:
         return list(_registered)
@@ -53,7 +59,10 @@ def register_cuda_dlls() -> list[str]:
             os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
             _registered.append(d)
     if not _registered:
-        log.warning("No nvidia/*/bin directories found in site-packages; CUDA provider will fail")
+        if cpu_mode:
+            log.info(CPU_MODE_NOTE)
+        else:
+            log.warning("No nvidia/*/bin directories found in site-packages; CUDA provider will fail")
     else:
         log.debug("Registered CUDA DLL dirs: %s", _registered)
     return list(_registered)

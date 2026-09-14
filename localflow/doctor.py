@@ -25,6 +25,13 @@ _lines: list[str] = []
 # `--doctor --verbose` shows them for local debugging.
 VERBOSE = False
 
+# True when the user configured CPU mode (asr.allow_cpu_fallback). A missing GPU, a missing
+# CUDA provider and a missing cuDNN are then the expected result of that choice, not faults -
+# reporting them as warnings sent CPU users hunting for a problem they had already decided not
+# to have. Set by report() before the GPU checks run.
+CPU_MODE = False
+CPU_NOTE = "CPU mode, as configured"
+
 
 def _emit(status: str, label: str, value: str = "") -> None:
     tag = f"[{status}]" if status.strip() else "     "
@@ -105,8 +112,12 @@ def _c_nvidia() -> tuple[str, str]:
     try:
         rc, out = _run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total,memory.used", "--format=csv,noheader"])
     except FileNotFoundError:
+        if CPU_MODE:
+            return OK, f"{CPU_NOTE} - no NVIDIA GPU / driver needed"
         return WARN, "nvidia-smi not found - no NVIDIA GPU / driver (CPU mode only)"
     if rc != 0 or not out:
+        if CPU_MODE:
+            return OK, f"{CPU_NOTE} - GPU not used (nvidia-smi returned {rc})"
         return WARN, f"nvidia-smi returned {rc}: {out[:200]}"
     rows = [r.strip() for r in out.splitlines() if r.strip()]
     driver = rows[0].split(",")[1].strip() if "," in rows[0] else "?"
@@ -126,7 +137,7 @@ def _c_ort() -> tuple[str, str]:
     try:
         from . import gpu as gpumod
 
-        gpumod.register_cuda_dlls()
+        gpumod.register_cuda_dlls(cpu_mode=CPU_MODE)
     except Exception as e:  # noqa: BLE001
         return WARN, f"could not register CUDA DLL dirs: {e}"
     try:
@@ -134,8 +145,14 @@ def _c_ort() -> tuple[str, str]:
     except Exception as e:  # noqa: BLE001
         return FAIL, f"onnxruntime not importable ({type(e).__name__}: {e}) - run install.ps1"
     provs = ort.get_available_providers()
-    status = OK if "CUDAExecutionProvider" in provs else WARN
-    extra = "" if status == OK else "   <- no CUDA provider: LocalFlow will need asr.allow_cpu_fallback: true"
+    has_cuda = "CUDAExecutionProvider" in provs
+    if has_cuda:
+        status, extra = OK, ""
+    elif CPU_MODE:
+        status, extra = OK, f"   <- {CPU_NOTE}"
+    else:
+        status = WARN
+        extra = "   <- no CUDA provider: LocalFlow will need asr.allow_cpu_fallback: true"
     return status, f"onnxruntime {ort.__version__}, providers {provs}{extra}"
 
 
@@ -151,6 +168,8 @@ def _c_ort_cpu_wheel() -> tuple[str, str]:
     if has_cpu and has_gpu:
         return FAIL, "both onnxruntime and onnxruntime-gpu are installed - the CPU wheel wins. Run: pip uninstall onnxruntime"
     if has_cpu:
+        if CPU_MODE:
+            return OK, f"onnxruntime (CPU wheel) only - {CPU_NOTE}"
         return WARN, "only the CPU onnxruntime wheel is installed (no GPU acceleration)"
     if has_gpu:
         return OK, "onnxruntime-gpu only (correct)"
@@ -161,14 +180,18 @@ def _c_cudnn() -> tuple[str, str]:
     try:
         from . import gpu as gpumod
 
-        dirs = gpumod.register_cuda_dlls()
+        dirs = gpumod.register_cuda_dlls(cpu_mode=CPU_MODE)
     except Exception as e:  # noqa: BLE001
         return WARN, f"{type(e).__name__}: {e}"
     if not dirs:
+        if CPU_MODE:
+            return OK, f"not needed - {CPU_NOTE}"
         return WARN, "no site-packages/nvidia/*/bin directories (CUDA runtime wheels missing)"
     found = [d for d in dirs if Path(d, "cudnn64_9.dll").is_file()]
     if found:
         return OK, f"cudnn64_9.dll found in {_safe_path(found[0])}"
+    if CPU_MODE:
+        return OK, f"cudnn64_9.dll not present - {CPU_NOTE}"
     return WARN, f"cudnn64_9.dll NOT found in {len(dirs)} nvidia/*/bin dirs (nvidia-cudnn-cu12 missing?)"
 
 
@@ -409,6 +432,9 @@ def report() -> str:
     _check("OS", _c_os)
     _check("Disk", lambda: _c_disk(project))
 
+    global CPU_MODE
+    CPU_MODE = bool(asr_cfg.get("allow_cpu_fallback"))
+
     _lines.append("")
     _lines.append("-- GPU --------------------------------------------------------------")
     _check("NVIDIA", _c_nvidia)
@@ -416,6 +442,8 @@ def report() -> str:
     _check("ORT wheels", _c_ort_cpu_wheel)
     _check("cuDNN", _c_cudnn)
     _emit(INFO, "asr.engine", f"{asr_cfg.get('engine', '?')} (allow_cpu_fallback: {asr_cfg.get('allow_cpu_fallback')})")
+    if CPU_MODE:
+        _emit(INFO, "GPU rows above", "CPU mode is configured, so the GPU is not expected to be used")
 
     _lines.append("")
     _lines.append("-- cleanup LLM (optional) -------------------------------------------")

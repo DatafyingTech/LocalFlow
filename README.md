@@ -7,6 +7,9 @@
 A free, private, GPU-accelerated voice dictation app for Windows.
 Everything runs on your own machine. No account, no subscription, no cloud, no word limits.
 
+**Want it on your PC?** [Install in three steps](#install). The phone part is optional and lives
+at the [bottom](#from-your-phone).
+
 [![Tests](https://github.com/DatafyingTech/LocalFlow/actions/workflows/tests.yml/badge.svg)](https://github.com/DatafyingTech/LocalFlow/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11–3.13-blue.svg)](https://www.python.org/downloads/)
@@ -73,10 +76,10 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
   and has a one-click **Pause (free GPU)** for gaming sessions.
 - **A dot, not a window.** A 22-pixel status dot you can drag anywhere. It never steals focus from
   whatever you're typing into.
-- **Works from your phone.** An Android app puts the same dot on your phone screen. It sends your
-  voice to your own PC over Tailscale and types the result into whatever app you are in. Your
-  desktop does the work; nothing goes to anyone else's server.
 - **Your words stay yours.** A local history file you own, and nothing else. No telemetry at all.
+- **Works from your phone (optional).** An Android app puts the same dot on your phone screen. It
+  sends your voice to your own PC over Tailscale and types the result into whatever app you are in.
+  Your desktop does the work; nothing goes to anyone else's server.
 
 ---
 
@@ -147,20 +150,31 @@ A Linux port is realistic on X11 and macOS, and awkward on Wayland. Contribution
 
 **1. Install the two prerequisites** (skip either if you already have it):
 
-- [Python 3.12](https://www.python.org/downloads/) — tick **"Add python.exe to PATH"** in the installer.
+- [Python 3.12](https://www.python.org/downloads/release/python-3129/) — on that page, scroll to the
+  bottom and pick **Windows installer (64-bit)**. **Do not use the big yellow Download button on
+  python.org, it gives a newer version LocalFlow cannot use yet.** In the installer, **tick "Add
+  python.exe to PATH"** before you click Install. The **Microsoft Store** version of Python 3.12
+  works too and has no PATH checkbox to remember. No Python at all? Run `install.bat` anyway — it
+  offers to install 3.12 for you with Windows' own package manager.
 - [Ollama](https://ollama.com/download) — optional, but it makes the cleanup much better.
 
-**2. Download LocalFlow** — [grab the ZIP](https://github.com/DatafyingTech/LocalFlow/archive/refs/heads/main.zip)
-and extract it anywhere, or:
+**2. Download LocalFlow** — [grab the ZIP](https://github.com/DatafyingTech/LocalFlow/archive/refs/heads/main.zip),
+right-click it, choose **Extract All**. That creates a folder named `LocalFlow-main`; open it (there
+is a second `LocalFlow-main` inside), and that inner folder is LocalFlow. Or, with git:
 
 ```powershell
 git clone https://github.com/DatafyingTech/LocalFlow.git
 cd LocalFlow
 ```
 
-**3. Double-click `install.bat`** and wait. Run it from inside the extracted folder, not from
-inside the ZIP. If you only saved `install.bat` on its own, it fetches the rest of the project
-for you and carries on.
+**3. Double-click `install.bat`** in that folder and wait. Run it from inside the extracted folder,
+not from inside the ZIP. If you only saved `install.bat` on its own, it fetches the rest of the
+project for you and carries on.
+
+Windows will probably show **"Windows protected your PC"** the first time: that is SmartScreen
+reacting to any script that came from the internet, not to LocalFlow. Click **More info**, then
+**Run anyway**. You can avoid it entirely by right-clicking the ZIP *before* extracting, choosing
+**Properties**, ticking **Unblock** at the bottom, clicking OK, and extracting after that.
 
 It checks your system, creates an isolated Python environment, writes your `config.yaml`,
 downloads the speech model (~2.5 GB, one time), pulls the cleanup model, and runs a self-test.
@@ -173,8 +187,8 @@ and names the one that is short.
 
 **4. Double-click `run.bat`.**
 
-A grey dot appears near the bottom of your screen and a tray icon appears by the clock. When the dot
-is grey, you're ready.
+A blue dot appears near the bottom of your screen while it loads; when it turns grey, you're ready.
+A tray icon appears by the clock at the same time. The first load takes longest, 5-20 seconds.
 
 ### Keep it running
 
@@ -184,9 +198,9 @@ sign-in and restarts the app (up to 10 times, a minute apart) if it ever stops. 
 rights are needed and nothing runs as a service.
 
 Why it exists: **signing out of Windows closes every app you own.** Signing back in restores your
-desktop but not your apps, so LocalFlow (and Ollama) stay down until somebody starts them by hand.
-From your phone that looks exactly like a broken Tailscale, which is a miserable thing to debug.
-A Windows session can also bounce on its own after an update or a crash, with no warning.
+desktop but not your apps, so LocalFlow stays down until somebody starts it by hand. This task is
+what brings it back. A Windows session can also bounce on its own after an update or a crash, with
+no warning.
 
 To turn it on or off: right-click the dot (or the tray icon) and use **Start with Windows**. It
 shows a tick when the task exists. From the installer: `install.bat -Autostart` or
@@ -196,21 +210,15 @@ exists, what state it is in, and whether Ollama has a startup entry of its own.
 Starting LocalFlow twice is harmless: the second copy notices the first, says so, and exits
 rather than adding a second dot and a second hotkey listener.
 
-### Three things Windows will do that are not bugs
+### Two things Windows will do that are not bugs
 
-**1. "Windows protected your PC" when you double-click a `.bat`.**
-Windows SmartScreen shows a blue box for any script that came from the internet. Click
-**More info**, then **Run anyway**. You can avoid it entirely: before you extract the ZIP,
-right-click it, choose **Properties**, tick **Unblock** at the bottom, click OK, and then extract.
-Windows marks everything inside as trusted and stops asking.
-
-**2. Recording produces nothing at all.**
+**1. Recording produces nothing at all.**
 Check **Settings > Privacy & security > Microphone** and make sure **"Let desktop apps access your
 microphone"** is switched on. When it is off Windows does not show an error or a prompt. The
 microphone simply returns silence, forever, and LocalFlow looks broken. `--doctor` opens the
 microphone and tells you if this is what is happening.
 
-**3. Your antivirus flags LocalFlow.**
+**2. Your antivirus flags LocalFlow.**
 LocalFlow watches for a global hotkey and sends synthetic keystrokes, because that is the only way
 to hear Ctrl+Win while you are typing in another app and then put text into it. Those two
 behaviours are also what a keylogger does, so some antivirus heuristics score them. It is a
@@ -253,6 +261,7 @@ Open any text box. Notepad, a browser address bar, Slack, your email. Hold **Ctr
 
 | Dot | Meaning |
 |---|---|
+| Blue, steady | Loading the speech model, 5-20 s after launch, longer the first time |
 | Grey | Ready and listening for your hotkey |
 | Red, pulsing with your voice | Recording |
 | Orange/red with a ring | Hands-free mode is on. It stays like this for the whole speech, then turns blue while it transcribes and cleans |
@@ -365,16 +374,20 @@ never stops working.
 
 ## Uninstall
 
-LocalFlow does not install anything into Windows, so there is nothing in Add/Remove Programs.
+There is nothing in Add/Remove Programs. Two steps, in this order:
 
-1. **Delete the LocalFlow folder.** That takes `.venv`, `models`, your config, your history and the
-   log with it. Nothing is left behind.
-2. **Remove the cleanup model** if you do not use Ollama for anything else:
-   `ollama rm gemma3:4b`. To remove Ollama itself, uninstall it from Windows Settings.
-3. **Remove the startup shortcut** if you made one: press `Win+R`, type `shell:startup`, and delete
-   the `run.bat` shortcut in the folder that opens.
+0. **Turn off autostart first.** Right-click the dot → untick **Start with Windows** (or
+   double-click `uninstall-autostart.bat`). This removes the scheduled task named `LocalFlow`. Do it
+   before you delete the folder, otherwise the task stays registered and fails quietly at every
+   sign-in.
+1. **Delete the LocalFlow folder.** That takes `.venv`, `models`, your `config.yaml`, your
+   `history.jsonl` and `localflow.log` with it.
 
-Python stays installed; uninstall it from Windows Settings if you only added it for LocalFlow.
+**What is still on your PC after the folder is gone:** the Ollama cleanup model, about 3.3 GB in
+`%USERPROFILE%\.ollama`. Remove it with `ollama rm gemma3:4b` if you do not use Ollama for anything
+else, and uninstall Ollama itself from Windows Settings. Python also stays installed; uninstall it
+from Windows Settings if you only added it for LocalFlow. Nothing else of LocalFlow's remains —
+no registry entries, no services, no files outside its own folder.
 
 ---
 
@@ -445,7 +458,8 @@ other apps the way Android's accessibility services can.
 
 ## When something goes wrong
 
-**Start here.** Run this and read what it tells you — it checks every part of the stack:
+**Start here.** **Double-click `doctor.bat` and paste what it prints** — it checks every part of the
+stack and tells you which one is unhappy. From a terminal, the same thing:
 
 ```powershell
 .\.venv\Scripts\python.exe -m localflow --doctor

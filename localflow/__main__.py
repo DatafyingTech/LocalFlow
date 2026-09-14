@@ -202,6 +202,7 @@ class App:
             ("cmd", "Open config.yaml", lambda: os.startfile(str(self.cfg_path))),
             ("cmd", "Open history", self.open_history),
             ("cmd", "Open log", lambda: os.startfile(str(LOG_PATH))),
+            ("cmd", "Run doctor", self.run_doctor),
             ("cmd", f"About LocalFlow {__version__}", self.about),
             ("sep",),
             ("cmd", "Quit LocalFlow", self.quit),
@@ -383,9 +384,24 @@ class App:
             f"ASR: {engine} ({gpu_txt}) | cleanup: {self.cfg['cleanup'].get('level')}"
             f"{'' if self.llm_ok else ' (rules only)'}\n"
             f"Python {platform.python_version()} | fully local, nothing is uploaded\n"
-            "Diagnostics: python -m localflow --doctor",
+            "Diagnostics: double-click doctor.bat (or Run doctor in this menu)",
             f"About LocalFlow {__version__}",
         )
+
+    def run_doctor(self) -> None:
+        """Open a console window running doctor.bat, so the report can be read and copied."""
+        repo = config.PROJECT_DIR
+        bat = repo / "doctor.bat"
+        if not bat.exists():
+            self.tray.notify("doctor.bat is missing from the LocalFlow folder.", "LocalFlow")
+            return
+        try:
+            import subprocess
+
+            subprocess.Popen(["cmd", "/c", "start", "", "doctor.bat"], cwd=str(repo))
+        except Exception as e:
+            log.warning("could not start doctor.bat: %s", e)
+            self.tray.notify(f"Could not run doctor.bat: {e}", "LocalFlow")
 
     def open_history(self) -> None:
         if self.history.path.exists():

@@ -4,6 +4,91 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.4] - 2026-09-14
+
+A friend with a gaming PC and no developer habits tried to install LocalFlow from the README. He
+got Python 3.14 from python.org's big yellow button, the installer told him "No supported Python
+found" while a Python sat right there on his PATH, and that was the end of the attempt. This
+release is that walk-through, fixed.
+
+### Fixed
+
+- **The Python link handed out a version LocalFlow cannot use.** The README now links the
+  Python **3.12** release page directly, says plainly not to press the big yellow Download button,
+  and reminds you to tick *Add python.exe to PATH* (the Microsoft Store's Python 3.12 works too and
+  has no checkbox to forget).
+- **"No supported Python found" now says what it found.** The installer looks at every Python it
+  can reach and reports it by version and path — *Found Python 3.14.0 at C:\... but LocalFlow needs
+  3.11 to 3.13* — instead of implying there is no Python at all.
+- **Autostart registration was broken in the installer.** A stray control character had crept into
+  the path to `tools\autostart.ps1`, so every install said *cannot register the task* no matter how
+  you answered. The tray menu's **Start with Windows** was unaffected.
+- **A small C: drive could fail the install halfway through.** pip unpacks every wheel in `%TEMP%`,
+  which lives on C: even when LocalFlow does not, and the CUDA wheels alone are about 2 GB. The
+  installer now points pip's temporary folder at the LocalFlow drive for the duration and warns if
+  C: is short anyway.
+- **`install.bat` no longer depends on PATH** to find PowerShell; it calls it by full path, so a
+  damaged PATH gives a real install instead of "powershell is not recognized".
+- **The blue dot is documented.** LocalFlow is blue, not grey, while the speech model loads. The
+  README's dot table, the install banner and the first-launch instructions now all say *a blue dot
+  appears while it loads; when it turns grey, you're ready*.
+- **Uninstall said the wrong thing.** It claimed nothing is installed into Windows (the autostart
+  task is), told you to delete a `shell:startup` shortcut that no version has created since 0.2.3,
+  and did not mention the 3.3 GB Ollama model left behind. All three corrected, with turning
+  autostart off as step 0.
+- **CPU mode no longer looks broken.** Installing with `-CPU` (or setting
+  `asr.allow_cpu_fallback: true`) had the smoke test print *ERROR ... CUDAExecutionProvider not
+  available* and *WARNING ... CUDA provider will fail*, and `--doctor` answered with three
+  warnings. Choosing CPU is not a fault: those lines are now a single INFO —
+  *CPU mode (as configured): running without CUDA* — and the NVIDIA, ONNX Runtime, ORT-wheel and
+  cuDNN rows read `[OK] ... CPU mode, as configured`, so the report ends with *Everything checks
+  out.* The warnings still appear for anyone who did **not** choose CPU and has no CUDA — which
+  really is a problem.
+- **The one-time model download is readable again.** It used to scroll past an
+  *unauthenticated requests to the HF Hub* notice and about eighty `INFO httpx: HTTP Request: GET
+  https://huggingface.co/...` lines full of signed tokens. LocalFlow now turns the `httpx` and
+  `huggingface_hub` loggers down to WARNING, sets `HF_HUB_VERBOSITY=warning` and
+  `HF_HUB_DISABLE_TELEMETRY=1`, and prints one plain line — *Downloading the speech model (about
+  2.5 GB). This happens once.* — above the progress bar, which is untouched.
+- **A misspelt installer flag is no longer ignored.** `install.bat -cpu-only` used to run a full
+  GPU install as though nothing had been typed. `install.ps1` now declares `[CmdletBinding()]`, so
+  an unknown switch stops the install in under a second with PowerShell's *A parameter cannot be
+  found that matches parameter name 'cpu-only'* and nothing is created.
+- **Unattended runs no longer answer their own questions.** With input redirected
+  (`install.bat < nul`, a CI job, a management tool) `Read-Host` returns an empty string, and the
+  autostart prompt's default *yes* registered the scheduled task without anyone agreeing to it —
+  the winget Python offer could install Python the same way. The installer now detects redirected
+  input (`[Console]::IsInputRedirected`) and, unless `-Autostart`/`-NoAutostart` said otherwise,
+  skips the prompt, registers nothing and prints *Not starting automatically (no interactive
+  console). Turn it on later from the tray menu: Start with Windows.* Python is never installed
+  unattended either: it prints the download link unless the new `-InstallPython` switch was passed.
+
+### Added
+
+- **The installer offers to install Python for you.** When no usable Python is found and Windows'
+  package manager is available, it asks (Enter for yes) and installs Python 3.12 with winget,
+  refreshes PATH in place and carries on with the install. `-NoPythonInstall` skips the offer,
+  `-InstallPython` accepts it without asking (the only way to install Python in an unattended run);
+  `-Python <path>` still wins.
+- **`doctor.bat`** — double-click it to run the full self-check and read the report in a window
+  that stays open. It is what the README, the install banner and the About box now point at, and
+  there is a **Run doctor** item in the dot and tray menus that opens it.
+- **`uninstall-autostart.bat`** — one double-click removes the scheduled task, for people who would
+  rather not hunt through a menu before deleting the folder.
+
+### Changed
+
+- **Honest numbers and clearer prompts in the installer.** The package step says *about 2-3 GB,
+  5-15 minutes on a normal connection* rather than "a few hundred MB"; the speech model download
+  announces its size before it starts; and the autostart question reads *Start LocalFlow
+  automatically when you sign in to Windows? Press Enter for yes, or type n then Enter for no*,
+  explaining that it restarts LocalFlow if it crashes and that Quit from the menu is respected.
+- **The README leads with the desktop.** A line under the tagline points straight at the three
+  install steps and says the phone half is optional; the phone bullet moved to the end of
+  Highlights and is marked optional; and the ZIP instructions now warn about the second
+  `LocalFlow-main` folder inside the first, with the SmartScreen "Run anyway" note where you
+  actually meet it.
+
 ## [0.2.3] - 2026-09-14
 
 Windows logged a user's session out and straight back in (Winlogon 7002/7001, four seconds

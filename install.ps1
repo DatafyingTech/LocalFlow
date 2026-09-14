@@ -19,6 +19,9 @@ Usage:
 
 Options:
   -Python <path>   use this python.exe instead of auto-detection
+  -NoPythonInstall do not offer to install Python 3.12 with winget when none is found
+  -InstallPython   install Python 3.12 with winget without asking (needed for unattended runs:
+                   with no console to answer from, the installer never installs Python by itself)
   -CPU             force the no-GPU configuration: installs requirements-cpu.txt instead
                    (no CUDA wheels, ~2 GB less), slower but works without NVIDIA
   -SkipOllama      do not install/pull the optional cleanup LLM
@@ -28,8 +31,11 @@ Options:
   -NoAutostart     do not register it (and do not ask)
   -Force           delete and recreate .venv from scratch
 #>
+[CmdletBinding()]
 param(
     [string]$Python = "",
+    [switch]$NoPythonInstall,
+    [switch]$InstallPython,
     [switch]$CPU,
     [switch]$SkipOllama,
     [switch]$SkipSmoke,
@@ -44,18 +50,33 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
 $PY_DOWNLOAD = "https://www.python.org/downloads/windows/"
+# The specific 3.12 release page. python.org's big download button hands out 3.14, which
+# LocalFlow cannot use yet, so never point a first-time installer at the front page.
+$PY_312_RELEASE = "https://www.python.org/downloads/release/python-3129/"
 $OLLAMA_DOWNLOAD = "https://ollama.com/download"
 $NVIDIA_DRIVERS = "https://www.nvidia.com/Download/index.aspx"
 # Disk is checked on two drives: the repo drive holds .venv + the ASR model, and the
 # user-profile drive holds Ollama's model store (%USERPROFILE%\.ollama, usually C:).
 $MIN_DISK_REPO_GB = 5
 $MIN_DISK_PROFILE_GB = 4
+$MIN_DISK_TEMP_GB = 4      # pip unpacks wheels in TEMP (on C:) before installing them
 $MIN_DRIVER = 525
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Ok($msg) { Write-Host "    [ok]   $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "    [warn] $msg" -ForegroundColor Yellow }
 function Info($msg) { Write-Host "    $msg" -ForegroundColor Gray }
+# Unattended runs must not decide for the user. Under `install.bat < nul` (a pipeline, a CI job,
+# a remote-management tool) [Environment]::UserInteractive is STILL true and Read-Host returns ""
+# immediately - so a prompt that defaults to yes would quietly register a scheduled task or
+# install Python that nobody asked for. Only prompt when there is a real console to answer from.
+function Test-InputRedirected {
+    try { return [Console]::IsInputRedirected } catch { return ($Host.Name -ne 'ConsoleHost') }
+}
+function Test-CanPrompt {
+    return ([Environment]::UserInteractive -and -not (Test-InputRedirected))
+}
+
 function Die($msg, $hint) {
     Write-Host ""
     Write-Host "INSTALL STOPPED" -ForegroundColor Red
@@ -85,7 +106,7 @@ if ($missing.Count -gt 0) {
     $tmpRoot = [IO.Path]::GetTempPath().TrimEnd('\')
     if ($root.StartsWith($tmpRoot, [StringComparison]::OrdinalIgnoreCase) -or $root -match '\\Temp\d*_.*\.zip') {
         Die "It looks like install.bat was opened from inside the ZIP file, so Windows ran it from a temporary folder." `
-            "Right-click the ZIP, choose Extract All, open the extracted LocalFlow folder, and double-click install.bat there."
+            "Right-click the ZIP, choose Extract All, open the extracted LocalFlow-main folder (there is a second LocalFlow-main inside it), and double-click install.bat there."
     }
     Info "Downloading the project so the install can continue (about 1 MB)..."
     $zip = Join-Path $tmpRoot ("LocalFlow-" + [guid]::NewGuid().ToString("N") + ".zip")
@@ -166,6 +187,18 @@ if ($profileDrive) {
     }
 }
 
+# pip unpacks every wheel in the temp folder before installing it. We redirect TEMP onto the
+# LocalFlow drive for the pip steps (see below), so this is only a warning - but if that
+# redirection fails, this is the drive that fills up.
+try {
+    $tempDrive = Get-FreeGB ([IO.Path]::GetTempPath())
+    if ($tempDrive -and $tempDrive.FreeGB -lt $MIN_DISK_TEMP_GB `
+        -and (-not $repoDrive -or $repoDrive.Drive -ne $tempDrive.Drive)) {
+        Warn "Only $($tempDrive.FreeGB) GB free on drive $($tempDrive.Drive): - pip needs about $MIN_DISK_TEMP_GB GB of temporary space on $($tempDrive.Drive): during install."
+        Info "LocalFlow moves that temporary space onto drive $(if ($repoDrive) { $repoDrive.Drive } else { '?' }): for you, so this usually does not matter. Free up space on $($tempDrive.Drive): if the install stops with 'No space left on device'."
+    }
+} catch { }
+
 # --- Python: auto-detect unless -Python was passed
 # NB: no double quotes and no % in this one-liner - PowerShell mangles both when passing
 # arguments to a native executable. chr(80) is "P" (pointer size -> 32/64-bit).
@@ -200,24 +233,99 @@ function Test-Supported($p) {
     return ($p.Minor -ge 11 -and $p.Minor -le 13)
 }
 
+# Look at every Python we can reach and remember what each one was, so that when none of them
+# is usable we can say WHICH version we found instead of the useless "no Python found" - the
+# common case today is python.org's big download button handing out 3.14.
+function Find-Pythons {
+    $found = @()
+    $seen = @{}
+    $candidates = @(@("py", "-3.12"), @("py", "-3.13"), @("py", "-3.11"), @("python"), @("python3"))
+    foreach ($c in $candidates) {
+        if (-not (Get-Command $c[0] -ErrorAction SilentlyContinue)) { continue }
+        $p = Probe-Python $c
+        if (-not $p) { continue }
+        $key = "$($p.Exe)".ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $found += $p
+    }
+    return $found
+}
+
+function Describe-Pythons($list) {
+    if (-not $list -or $list.Count -eq 0) { return "" }
+    return (($list | ForEach-Object { "$($_.Label) at $($_.Exe)" }) -join "; ")
+}
+
+function Refresh-PathFromRegistry {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = ($machine + ";" + $user)
+}
+
 $pyInfo = $null
 if ($Python) {
     if (-not (Test-Path $Python)) { Die "-Python `"$Python`" does not exist." "Pass the full path to python.exe, or drop -Python to auto-detect." }
     $pyInfo = Probe-Python @($Python)
     if (-not $pyInfo) { Die "Could not run `"$Python`"." "Is it really a python.exe?" }
     if (-not (Test-Supported $pyInfo)) {
-        Die "$($pyInfo.Label) at $Python is not supported." "LocalFlow needs 64-bit Python 3.11, 3.12 or 3.13. Download: $PY_DOWNLOAD"
+        Die "$($pyInfo.Label) at $Python is not supported." "LocalFlow needs 64-bit Python 3.11, 3.12 or 3.13. Download: $PY_312_RELEASE"
     }
 } else {
-    $candidates = @(@("py", "-3.12"), @("py", "-3.13"), @("py", "-3.11"), @("python"))
-    foreach ($c in $candidates) {
-        if (-not (Get-Command $c[0] -ErrorAction SilentlyContinue)) { continue }
-        $p = Probe-Python $c
-        if (Test-Supported $p) { $pyInfo = $p; break }
-    }
+    $all = Find-Pythons
+    $pyInfo = $all | Where-Object { Test-Supported $_ } | Select-Object -First 1
+
     if (-not $pyInfo) {
-        Die "No supported Python found (looked for py -3.12, py -3.13, py -3.11 and python on PATH)." `
-            "Install 64-bit Python 3.12 from $PY_DOWNLOAD (tick `"Add python.exe to PATH`"), then run this installer again. Already have one? Pass it: install.bat -Python C:\path\to\python.exe"
+        $what = Describe-Pythons $all
+        if ($what) {
+            Warn "Found $what but LocalFlow needs 3.11 to 3.13."
+        } else {
+            Warn "No Python at all was found on this computer (looked for py -3.12, py -3.13, py -3.11, python and python3)."
+        }
+
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        $tryWinget = $false
+        if ($NoPythonInstall) {
+            Info "Not offering to install Python (-NoPythonInstall)."
+        } elseif (-not $winget) {
+            Info "Windows' package manager (winget) is not available here, so Python cannot be installed for you."
+        } elseif ($InstallPython) {
+            $tryWinget = $true
+            Info "-InstallPython given: installing Python 3.12 with winget."
+        } elseif (Test-CanPrompt) {
+            $answer = Read-Host "    Install Python 3.12 now with Windows' package manager? Press Enter for yes, n for no"
+            $tryWinget = ($answer -notmatch '^\s*[nN]')
+        } else {
+            # No console to answer from: installing Python is far too big a decision to take on
+            # a silent non-answer, so it is never done unless -InstallPython said so explicitly.
+            Info "No interactive console, so Python is not installed automatically."
+            Info "Install 64-bit Python 3.12 yourself: $PY_312_RELEASE"
+            Info "(or re-run with -InstallPython to let winget do it unattended)"
+        }
+
+        if ($tryWinget) {
+            Step "Installing Python 3.12 with winget (about 30 MB)"
+            $old = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                & winget install --id Python.Python.3.12 --exact --silent --accept-package-agreements --accept-source-agreements --override "/quiet PrependPath=1 Include_launcher=1"
+            } catch {
+                Warn "winget could not run: $($_.Exception.Message)"
+            } finally {
+                $ErrorActionPreference = $old
+            }
+            Refresh-PathFromRegistry
+            $all = Find-Pythons
+            $pyInfo = $all | Where-Object { Test-Supported $_ } | Select-Object -First 1
+            if ($pyInfo) { Ok "Python 3.12 installed" }
+        }
+    }
+
+    if (-not $pyInfo) {
+        $what = Describe-Pythons (Find-Pythons)
+        $msg = if ($what) { "Found $what but LocalFlow needs 3.11 to 3.13." } else { "No supported Python found (looked for py -3.12, py -3.13, py -3.11, python and python3 on PATH)." }
+        Die $msg `
+            "Install 64-bit Python 3.12 from $PY_312_RELEASE - scroll down to `"Windows installer (64-bit)`" and tick `"Add python.exe to PATH`". Do not use the big yellow Download button on python.org: it gives a newer Python that LocalFlow cannot use yet. Then run install.bat again. Already have a suitable Python? Pass it: install.bat -Python C:\path\to\python.exe"
     }
 }
 $Python = $pyInfo.Exe
@@ -288,7 +396,7 @@ if ($CPU) {
     Write-Host "    mode now means the GPU stays unused until you re-install." -ForegroundColor Yellow
     Write-Host ""
     $answer = ""
-    if ([Environment]::UserInteractive) {
+    if (Test-CanPrompt) {
         $answer = Read-Host "    Continue in CPU mode? [y] yes  /  [n] stop so I can fix my driver (y/n)"
     } else {
         Warn "Not an interactive console; continuing in CPU mode. Re-run with -CPU to silence this."
@@ -354,13 +462,29 @@ if ($cpuMode) {
 if ($cpuMode) {
     Step "Installing Python packages from $reqFile - CPU build, no CUDA wheels (about 2 GB less to download)"
 } else {
-    Step "Installing Python packages from $reqFile (a few hundred MB the first time; go make coffee)"
+    Step "Installing Python packages from $reqFile - about 2-3 GB, 5-15 minutes on a normal connection"
 }
 if ($reqFile -eq "requirements-cpu.txt") {
     # if this venv was previously a GPU install, drop the GPU wheel so the CPU one can take over
     $old = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try { & $venvPy -m pip uninstall -y onnxruntime-gpu 2>$null | Out-Null } catch { } finally { $ErrorActionPreference = $old }
+}
+
+# pip downloads and unpacks every wheel in %TEMP% before installing it, and %TEMP% is on C: even
+# when LocalFlow lives on another drive. The CUDA wheels alone are ~2 GB, so a small C: can run
+# out of space mid-install although the pre-flight passed. Keep the transient on the LocalFlow
+# drive instead, and put it back afterwards.
+$pipTmp = Join-Path $root ".venv\tmp"
+$oldTmp = $env:TMP
+$oldTemp = $env:TEMP
+try {
+    New-Item -ItemType Directory -Path $pipTmp -Force | Out-Null
+    $env:TMP = $pipTmp
+    $env:TEMP = $pipTmp
+    Info "pip will unpack into $pipTmp (keeps a few GB of temporary files off your C: drive)"
+} catch {
+    Warn "Could not create $pipTmp; pip will use the normal temp folder on C:."
 }
 & $venvPy -m pip install --disable-pip-version-check -r $reqFile
 if ($LASTEXITCODE -ne 0) {
@@ -385,6 +509,11 @@ if (-not $cpuMode) {
         & $venvPy -m pip install --disable-pip-version-check --no-deps onnxruntime-gpu==1.24.4
     }
 }
+
+# hand TEMP back to Windows and drop the scratch folder (it can hold a few GB after the CUDA wheels)
+$env:TMP = $oldTmp
+$env:TEMP = $oldTemp
+Remove-Item -Recurse -Force $pipTmp -ErrorAction SilentlyContinue
 Ok "packages installed"
 
 # ---------------------------------------------------------------- 4. optional LLM
@@ -436,6 +565,7 @@ if ($SkipSmoke) {
     Step "Speech model + smoke test"
     Info "Downloading NVIDIA Parakeet TDT 0.6B v2 into .\models - about 2.5 GB, one time only."
     Info "Nothing is downloaded again after this; LocalFlow runs fully offline."
+    Info "Downloading ~2.5 GB, progress below. A long pause with no output is normal on a slow link."
     $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
     & $venvPy -m tests.smoke_asr
     if ($LASTEXITCODE -ne 0) {
@@ -458,21 +588,23 @@ if ($NoAutostart) {
     Info "Skipping autostart (-NoAutostart). Turn it on later from the tray menu: Start with Windows."
 } elseif ($Autostart) {
     $wantAuto = $true
-} elseif ([Environment]::UserInteractive) {
+} elseif (Test-CanPrompt) {
     Info "Windows closes every app when you sign out, and does not reopen them when you sign back in."
-    Info "A scheduled task starts LocalFlow 20 s after each sign-in and restarts it if it stops."
+    Info "A scheduled task starts LocalFlow 20 s after each sign-in and restarts it if it crashes"
+    Info "(Quit from the menu is respected)."
     Info "You can change this any time: right-click the dot -> Start with Windows."
-    $answer = Read-Host "    Start LocalFlow automatically when you sign in? (Y/n)"
+    $answer = Read-Host "    Start LocalFlow automatically when you sign in to Windows? Press Enter for yes, or type n then Enter for no"
     $wantAuto = ($answer -notmatch '^\s*[nN]')
 } else {
-    Info "Not an interactive console; skipping autostart. Re-run with -Autostart to register it."
+    Info "Not starting automatically (no interactive console). Turn it on later from the tray menu: Start with Windows."
+    Info "Or re-run the installer with -Autostart to register it now."
 }
 
 $autoOn = $false
 if ($wantAuto) {
-    $autoScript = Join-Path $root "toolsutostart.ps1"
+    $autoScript = Join-Path $root "tools\autostart.ps1"
     if (-not (Test-Path $autoScript)) {
-        Warn "toolsutostart.ps1 is missing; cannot register the task."
+        Warn "tools\autostart.ps1 is missing; cannot register the task."
     } else {
         $json = ""
         $old = $ErrorActionPreference
@@ -508,8 +640,8 @@ Write-Host "   LocalFlow $ver is installed." -ForegroundColor Green
 Write-Host "  ============================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "   Next step:  double-click run.bat" -ForegroundColor White
-Write-Host "               wait for the small dot near the bottom of the screen to turn grey" -ForegroundColor Gray
-Write-Host "               (a few seconds while the model loads)" -ForegroundColor Gray
+Write-Host "               a blue dot appears near the bottom of the screen while it loads;" -ForegroundColor Gray
+Write-Host "               when it turns grey, you are ready (5-20 s, longer the first time)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "   Then:       click into any text box, hold Ctrl+Win, talk, let go." -ForegroundColor White
 Write-Host ""
@@ -525,6 +657,6 @@ if ($autoOn) {
 } else {
     Write-Host "   Not starting automatically. Right-click the dot -> Start with Windows to change that." -ForegroundColor Gray
 }
-Write-Host "   Something wrong? Run:  .\.venv\Scripts\python.exe -m localflow --doctor" -ForegroundColor Gray
+Write-Host "   Something wrong? Double-click doctor.bat and paste what it prints." -ForegroundColor Gray
 Write-Host ""
 exit 0

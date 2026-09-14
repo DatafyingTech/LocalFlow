@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from localflow import config as cfgmod  # noqa: E402
+from localflow import asr as asrmod  # noqa: E402
 from localflow.asr import create_engine  # noqa: E402
 
 SAMPLE = ROOT / "tests" / "sample_tts.wav"
@@ -71,6 +72,8 @@ def main() -> int:
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # The model download otherwise buries the real output under ~80 httpx request lines.
+    asrmod._quiet_hub_logging()
     cfg = cfgmod.load()
     if args.engine:
         cfg["asr"]["engine"] = args.engine
