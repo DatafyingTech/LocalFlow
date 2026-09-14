@@ -70,6 +70,12 @@
                 android:text="@string/btn_test" />
         </LinearLayout>
 
+        <Button
+            android:id="@+id/diagnose"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_diagnose" />
+
         <TextView
             android:id="@+id/connectionStatus"
             android:layout_width="match_parent"

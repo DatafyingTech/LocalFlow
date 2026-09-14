@@ -45,6 +45,12 @@ No auth. For the phone's "Test connection" button and for the status page.
 
 `ready` is false while models are still loading; the phone should show "PC is warming up" and retry.
 
+`llm_ok` is a live answer, not a startup one (since 0.2.3). Serving this endpoint re-probes Ollama
+whenever the current answer is false, and a background timer does the same every 30 s, so an
+Ollama that starts *after* LocalFlow flips `llm_ok` back to `true` on its own within about half a
+minute — no restart. While it is false, cleanup silently falls back to the deterministic rules
+pass; dictation keeps working and `/v1/dictate` still returns text.
+
 ### `POST /v1/warm`
 Auth required, empty body. Call it the moment recording starts. The PC unloads its cleanup model
 after idling (`llm.keep_alive`, 10 minutes by default) and reloading takes several seconds; this

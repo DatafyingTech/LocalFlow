@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import __version__
 from . import audio as audiomod
-from . import cleanup, config, inject, llm, winfocus
+from . import autostart, cleanup, config, inject, llm, winfocus
 from .asr import CudaNotActiveError, create_engine, model_is_cached
 from .history import History
 from .hotkeys import Hotkeys
@@ -94,7 +94,11 @@ class App:
             cfg["llm"],
             backtrack_phrases=list(cfg["cleanup"].get("backtrack_strong") or []) + list(cfg["cleanup"].get("backtrack_weak") or []),
         )
-        self.llm_ok = False
+        # llm_ok is a live fact, not a startup one: OllamaMonitor re-probes while it is False
+        # (background timer + on every dictation + on /v1/health and /v1/warm) so an Ollama that
+        # came up after LocalFlow does not leave cleanup disabled until the next restart.
+        self.llm_mon = llm.OllamaMonitor(self.llm, interval_s=30.0, on_back=self._on_llm_back)
+        self._autostart_on = False
 
         self.pill = FlowBar(
             cfg["ui"],
@@ -125,6 +129,32 @@ class App:
         self._worker.start()
         self._level_thread = None
         self.fullscreen = winfocus.FullscreenWatcher(self._on_fullscreen_change, interval_s=1.0)
+
+    # ------------------------------------------------------------------ Ollama health
+    @property
+    def llm_ok(self) -> bool:
+        """Live answer from the monitor (not a startup-only flag)."""
+        return self.llm_mon.ok
+
+    def _on_llm_back(self) -> None:
+        """Ollama returned after being down: warm it once, exactly as at startup."""
+        lvl = self.cfg["cleanup"].get("level", "light")
+        level = lvl if lvl in llm.LEVEL_RULES else "light"
+
+        def _warm():
+            try:
+                ms = self.llm.warmup(level=level)
+                log.info("LLM %s warm in %.0f ms", self.llm.model, ms)
+            except Exception as e:  # noqa: BLE001
+                log.warning("re-warm after Ollama returned failed: %s", e)
+
+        threading.Thread(target=_warm, name="llm-warm-recovered", daemon=True).start()
+
+    def probe_llm_async(self) -> None:
+        """Re-probe Ollama off the calling thread (used on the hotkey path, which must not block)."""
+        if self.llm_mon.ok:
+            return
+        threading.Thread(target=self.llm_mon.check, name="llm-probe", daemon=True).start()
 
     # ------------------------------------------------------------------ menu (tray + pill)
     def menu_spec(self) -> list:
@@ -163,6 +193,7 @@ class App:
             ("check", "Hide dot in fullscreen apps", lambda: bool(self.cfg["ui"].get("hide_when_fullscreen", False)), self.toggle_hide_fullscreen),
             ("check", "Auto-pause in fullscreen apps", lambda: bool(self.cfg["gpu"].get("auto_pause_fullscreen", False)), self.toggle_auto_pause),
             ("check", "Show Flow Bar", lambda: self.pill.enabled, self.toggle_overlay),
+            ("check", "Start with Windows", lambda: self._autostart_on, self.toggle_autostart),
             ("check", "Sounds", lambda: bool(self.cfg["ui"].get("sounds", True)), self.toggle_sounds),
             ("sep",),
             ("check", "Enable phone access", lambda: bool(self.cfg["server"].get("enabled", False)), self.toggle_server),
@@ -220,6 +251,36 @@ class App:
             self.pill.start()
         else:
             self.pill.hide()
+
+    def refresh_autostart(self) -> None:
+        """Cache the scheduled-task state so building the menu never shells out."""
+        try:
+            self._autostart_on = autostart.is_enabled()
+        except Exception as e:  # noqa: BLE001
+            log.debug("autostart state unknown: %s", e)
+
+    def toggle_autostart(self) -> None:
+        """Register / unregister the per-user \"LocalFlow\" logon task (no elevation needed)."""
+        want = not self._autostart_on
+
+        def _run():
+            try:
+                ok, msg = (autostart.enable() if want else autostart.disable())
+            except Exception as e:  # noqa: BLE001
+                ok, msg = False, f"{type(e).__name__}: {e}"
+            self.refresh_autostart()
+            if ok:
+                log.info("autostart -> %s", "on" if want else "off")
+                self.tray.notify(
+                    "LocalFlow will start automatically when you sign in to Windows."
+                    if want else "LocalFlow will no longer start automatically.",
+                    "LocalFlow",
+                )
+            else:
+                log.error("autostart change failed: %s", msg)
+                self.tray.notify(f"Could not change autostart: {msg}", "LocalFlow")
+
+        threading.Thread(target=_run, name="autostart", daemon=True).start()
 
     def toggle_sounds(self) -> None:
         self.cfg["ui"]["sounds"] = not self.cfg["ui"].get("sounds", True)
@@ -384,23 +445,23 @@ class App:
             log.error("audio open failed: %s", e)
             self.tray.notify(f"Microphone error: {e}", "LocalFlow")
 
-        if self.llm.available():
-            if self.llm.has_model():
-                self.llm_ok = True
-                lvl = self.cfg["cleanup"]["level"]
+        if self.llm_mon.start():
+            lvl = self.cfg["cleanup"]["level"]
 
-                def _warm(level=lvl if lvl != "none" else "light"):
-                    # in the background: a saturated GPU (game + render) can make this take minutes,
-                    # and dictation must not wait for it (calls fall back to rules until it is warm)
-                    ms = self.llm.warmup(level=level)
-                    log.info("LLM %s warm in %.0f ms", self.llm.model, ms)
+            def _warm(level=lvl if lvl != "none" else "light"):
+                # in the background: a saturated GPU (game + render) can make this take minutes,
+                # and dictation must not wait for it (calls fall back to rules until it is warm)
+                ms = self.llm.warmup(level=level)
+                log.info("LLM %s warm in %.0f ms", self.llm.model, ms)
 
-                threading.Thread(target=_warm, name="llm-warm-startup", daemon=True).start()
-            else:
-                log.warning("Ollama is running but model %s is missing (ollama pull %s); LLM cleanup disabled", self.llm.model, self.llm.model)
+            threading.Thread(target=_warm, name="llm-warm-startup", daemon=True).start()
+        elif self.llm.available():
+            log.warning("Ollama is running but model %s is missing (ollama pull %s); LLM cleanup disabled "
+                        "until it appears (re-checked every 30 s)", self.llm.model, self.llm.model)
         else:
-            log.warning("Ollama not reachable at %s; LLM cleanup disabled (rules only)", self.llm.host)
+            log.warning("Ollama not reachable at %s; rules-only cleanup for now (re-checking every 30 s)", self.llm.host)
 
+        self.refresh_autostart()
         self.ready = True
         self.hotkeys.start()
         self.fullscreen.start()
@@ -416,6 +477,7 @@ class App:
             beep("error", self._sounds())  # engines unloaded: Resume from the tray / dot menu first
             return
         self.polish_mode = polish
+        self.probe_llm_async()  # Ollama may have come back since the last dictation
         if self.llm_ok:
             # the key just went down: if Ollama has unloaded gemma (keep_alive), reload it now so the
             # load overlaps with the user speaking instead of adding to the paste latency
@@ -618,6 +680,10 @@ class App:
                 text = cleanup.post_llm(out.text, ccfg)
             else:
                 log.info("LLM not used (%s); applying rules Backtrack fallback", out.reason)
+                if llm.looks_unreachable(out.reason):
+                    # Ollama went away mid-session (crash, sign-out, service restart): stop
+                    # pretending it is there and let the monitor watch for its return
+                    self.llm_mon.mark_down(out.reason)
         if use_llm and not used and text:
             t2 = time.perf_counter()
             text, n_bt = cleanup.apply_backtrack(text, ccfg)
@@ -731,6 +797,9 @@ class App:
         return res
 
     def server_status(self) -> dict:
+        # /v1/health and the status page both land here: re-probe so a phone asking "is the PC
+        # ok?" gets today's answer, not the answer from whenever LocalFlow started.
+        self.llm_mon.check()
         return {
             "version": __version__,
             "engine": getattr(self.engine, "name", self.cfg["asr"].get("engine", "")),
@@ -773,6 +842,7 @@ class App:
         """The phone started recording: reload the cleanup model in the background if it was
         unloaded after idling, exactly as the desktop does on hotkey key-down."""
         loaded = True
+        self.llm_mon.check()
         if self.llm is not None and self.llm_ok:
             try:
                 level = self.cfg["cleanup"].get("handsfree_level", "high")
@@ -868,6 +938,7 @@ class App:
     def quit(self) -> None:
         log.info("quitting")
         try:
+            self.llm_mon.stop()
             self.fullscreen.stop()
             self.hotkeys.stop()
             self.recorder.close()
@@ -883,6 +954,61 @@ class App:
         if self.cfg["server"].get("enabled", False):
             self.start_server()  # answers 503 until load_models sets ready
         self.tray.run(setup=self.load_models)
+
+
+# Held for the life of the process: releasing the handle would let a second instance start.
+_SINGLETON_HANDLE = None
+MUTEX_NAME = "Local\\LocalFlowSingleton"
+
+
+def already_running() -> bool:
+    """True when another LocalFlow is live in this Windows session.
+
+    A named mutex, not a lock file: Windows destroys it when the owning process dies, so a
+    crash or a sign-out can never leave a stale lock that blocks the next start (exactly the
+    situation the autostart task exists for).
+    """
+    global _SINGLETON_HANDLE
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        err = kernel32.GetLastError()
+        if not handle:
+            return False  # cannot tell; better to run than to refuse to start
+        _SINGLETON_HANDLE = handle
+        return err == 183  # ERROR_ALREADY_EXISTS
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _notify_already_running() -> None:
+    """A message box, since a second instance has no tray icon of its own to pop a balloon from.
+
+    MessageBoxTimeoutW so an unattended start (the logon task firing next to a running app)
+    cannot leave a modal dialog waiting for a click forever.
+    """
+    if sys.platform != "win32":
+        return
+    text = ("LocalFlow is already running.\n\nLook for the dot near the bottom of the screen, "
+            "or the tray icon.")
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        flags = 0x40 | 0x10000  # MB_ICONINFORMATION | MB_SETFOREGROUND
+        try:
+            user32.MessageBoxTimeoutW(None, text, "LocalFlow", flags, 0, 8000)
+        except AttributeError:
+            user32.MessageBoxW(None, text, "LocalFlow", flags)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -912,16 +1038,12 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(bool(cfg.get("debug")))
     log.info("LocalFlow %s starting (Python %s, config %s)", __version__, platform.python_version(), cfg_path)
 
-    # single-instance guard
-    try:
-        import ctypes
-
-        ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\LocalFlowSingleton")
-        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            log.error("LocalFlow is already running")
-            return 1
-    except Exception:
-        pass
+    if already_running():
+        # A second tray icon means a second hotkey listener and a second dot: every keystroke
+        # would be grabbed twice. Say so and leave the running instance alone.
+        log.warning("LocalFlow is already running (single-instance guard); this second instance is exiting")
+        _notify_already_running()
+        return 0
 
     app = App(cfg, cfg_path)
     try:

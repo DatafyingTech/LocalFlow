@@ -84,6 +84,144 @@ class LLMResult:
     reason: str = ""
 
 
+# reasons from `cleanup()` that mean "the server was not there", as opposed to "the server
+# answered but the answer was no good" (a rejection or a slow decode is not a dead Ollama)
+_UNREACHABLE_HINTS = (
+    "error connection", "error newconnection", "error requestexception", "error chunkedencoding",
+    "connection refused", "error sslerror", "http 502", "http 503", "http 504",
+)
+
+
+def looks_unreachable(reason: str) -> bool:
+    """True when an LLMResult.reason says Ollama itself was unreachable.
+
+    Used to flip `llm_ok` back to False so the monitor starts re-probing: being wrong here is
+    cheap (the next probe puts it straight back), being right saves a permanently dead LLM.
+    """
+    r = (reason or "").lower()
+    return any(h in r for h in _UNREACHABLE_HINTS)
+
+
+class OllamaMonitor:
+    """Is Ollama usable right now?
+
+    `llm_ok` used to be decided once at startup, so an Ollama that was down at boot (a Windows
+    sign-out restarts everything in a random order) stayed "down" until LocalFlow was restarted
+    by hand. This keeps the answer live: while the answer is False a light background timer
+    re-probes every `interval_s`, dictations and `/v1/health` re-probe on demand, and a failed
+    request flips a True back to False and restarts the timer.
+
+    `timer_factory` is injectable so tests can drive the timer without waiting.
+    """
+
+    def __init__(
+        self,
+        client: "OllamaClient | Any",
+        *,
+        interval_s: float = 30.0,
+        min_gap_s: float = 2.0,
+        on_back: "Callable[[], None] | None" = None,
+        timer_factory: "Callable[[float, Callable[[], None]], Any] | None" = None,
+    ):
+        self.client = client
+        self.interval_s = float(interval_s)
+        self.min_gap_s = float(min_gap_s)
+        self.on_back = on_back
+        self._timer_factory = timer_factory or (lambda s, fn: threading.Timer(s, fn))
+        self._lock = threading.RLock()
+        self._ok = False
+        self._timer: Any = None
+        self._last_probe = 0.0
+        self._started = False
+
+    # -- state
+    @property
+    def ok(self) -> bool:
+        return self._ok
+
+    def _probe(self) -> bool:
+        try:
+            return bool(self.client.available()) and bool(self.client.has_model())
+        except Exception as e:  # noqa: BLE001 - a probe must never raise into the caller
+            log.debug("Ollama probe failed: %s", e)
+            return False
+
+    def _cancel_timer(self) -> None:
+        t, self._timer = self._timer, None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _arm_timer(self) -> None:
+        if self._timer is not None:
+            return
+        t = self._timer_factory(self.interval_s, self._tick)
+        self._timer = t
+        try:
+            t.daemon = True
+        except Exception:  # noqa: BLE001
+            pass
+        t.start()
+
+    def _tick(self) -> None:
+        with self._lock:
+            self._timer = None
+        self.check(force=True)
+
+    # -- entry points
+    def start(self) -> bool:
+        """First probe at startup. Never logs 'Ollama is back' (nothing was lost yet)."""
+        up = self._probe()
+        with self._lock:
+            self._started = True
+            self._last_probe = time.monotonic()
+            self._ok = up
+            if not up:
+                self._arm_timer()
+        return up
+
+    def check(self, *, force: bool = False) -> bool:
+        """Re-probe when the answer is currently False. Cheap and safe to call often."""
+        with self._lock:
+            if self._ok:
+                return True
+            if not force and (time.monotonic() - self._last_probe) < self.min_gap_s:
+                return False
+        up = self._probe()
+        cb = None
+        with self._lock:
+            self._last_probe = time.monotonic()
+            if up:
+                self._ok = True
+                self._cancel_timer()
+                cb = self.on_back
+            else:
+                self._arm_timer()
+        if up:
+            log.info("Ollama is back; cleanup re-enabled")
+        if cb is not None:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001
+                log.exception("Ollama on_back callback failed")
+        return up
+
+    def mark_down(self, why: str = "") -> None:
+        """A request just failed in a way that means Ollama is gone: re-arm the probe timer."""
+        with self._lock:
+            was = self._ok
+            self._ok = False
+            self._arm_timer()
+        if was:
+            log.warning("Ollama looks unreachable (%s); cleanup falls back to rules until it returns", why or "?")
+
+    def stop(self) -> None:
+        with self._lock:
+            self._cancel_timer()
+
+
 class OllamaClient:
     def __init__(self, cfg: dict[str, Any], backtrack_phrases: list[str] | None = None):
         self.cfg = cfg

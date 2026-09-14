@@ -90,6 +90,8 @@ class OverlayService : Service(), View.OnTouchListener {
     private var recorder: Recorder? = null
     private var currentMode: String = ApiClient.MODE_PTT
     private var pendingWav: ByteArray? = null      // kept after a timeout so a tap can retry
+    /** Last error toast, re-shown when the user taps the red ring to ask what happened. */
+    private var lastErrorMessage: String? = null
     private var pendingMode: String = ApiClient.MODE_PTT
     private var lastResultHandsfree = false
     private var resetJob: Runnable? = null
@@ -473,6 +475,9 @@ class OverlayService : Service(), View.OnTouchListener {
             DotView.State.IDLE -> startRecording(ApiClient.MODE_HANDSFREE)
             DotView.State.HANDSFREE -> if (region == DotView.Region.CANCEL) discard() else stopAndSend()
             DotView.State.ERROR -> {
+                // The toast that explained the error is long gone by the time anyone looks at the
+                // red ring, so say it again on the tap that asks about it.
+                lastErrorMessage?.let { toast(it) }
                 val wav = pendingWav
                 if (wav != null) send(wav, pendingMode) else setState(DotView.State.IDLE)
             }
@@ -566,6 +571,7 @@ class OverlayService : Service(), View.OnTouchListener {
 
     private fun onResult(r: ApiClient.Dictation, mode: String) {
         pendingWav = null
+        lastErrorMessage = null
         if (r.empty || r.text.isEmpty()) {
             setState(DotView.State.IDLE)
             return
@@ -591,8 +597,9 @@ class OverlayService : Service(), View.OnTouchListener {
     }
 
     private fun onError(e: ApiClient.ApiException) {
-        Log.w(TAG, "API error ${e.kind}: ${e.message}")
-        toast(e.message ?: "Error")
+        Log.w(TAG, "API error ${e.kind} (${e.causeName}): ${e.message}")
+        lastErrorMessage = e.message ?: ApiClient.messageFor(e.kind)
+        toast(lastErrorMessage ?: "Error")
         haptic()
         tone(ToneGenerator.TONE_PROP_NACK)
         if (e.retryable) {

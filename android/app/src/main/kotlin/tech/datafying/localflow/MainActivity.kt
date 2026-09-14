@@ -75,6 +75,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.pasteSetup).setOnClickListener { pasteSetupLine() }
         findViewById<Button>(R.id.testConnection).setOnClickListener { testConnection() }
+        findViewById<Button>(R.id.diagnose).setOnClickListener { diagnose() }
 
         findViewById<Button>(R.id.permMicBtn).setOnClickListener { requestMic() }
         findViewById<Button>(R.id.permOverlayBtn).setOnClickListener {
@@ -187,12 +188,50 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: ApiClient.ApiException) {
                 when (e.kind) {
-                    ApiClient.Kind.NETWORK -> "PC not reachable. Is Tailscale on (phone and PC), and is phone access enabled in the PC tray?"
+                    ApiClient.Kind.NO_DNS -> ApiClient.MSG_NO_DNS
+                    ApiClient.Kind.REFUSED -> ApiClient.MSG_REFUSED
+                    ApiClient.Kind.UNREACHABLE -> ApiClient.MSG_UNREACHABLE
+                    ApiClient.Kind.NETWORK -> "${ApiClient.MSG_NETWORK}. Is Tailscale on (phone and PC), and is phone access enabled in the PC tray?"
                     ApiClient.Kind.BAD_URL -> e.message ?: ApiClient.MSG_URL_MALFORMED   // blank vs malformed
                     else -> "Error: ${e.message}"
                 }
             } catch (e: Exception) {
                 "Error: ${e.message}"
+            }
+            runOnUiThread { if (!isFinishing) connectionStatus.text = msg }
+        }
+    }
+
+    /**
+     * "It says PC not reachable" is three different problems with three different fixes, and the
+     * toast the dot shows is gone in two seconds. This runs the same health call and writes down
+     * which of the three it was, plus the raw exception class, so it can go into a bug report.
+     */
+    private fun diagnose() {
+        settings.serverUrl = serverUrl.text.toString()
+        settings.token = token.text.toString()
+        connectionStatus.text = getString(R.string.diagnose_running)
+        val api = ApiClient(settings)
+        worker.execute {
+            val msg = try {
+                val h = api.health()
+                "Reachable. LocalFlow ${h.version} on the PC, " +
+                    (if (h.ready) "ready" else "not ready yet") +
+                    (if (h.llmOk) ", cleanup LLM up" else ", cleanup LLM down (rules-only)") +
+                    "\nNothing to diagnose: the network path is fine."
+            } catch (e: ApiClient.ApiException) {
+                val verdict = when (e.kind) {
+                    ApiClient.Kind.NO_DNS -> "Name does not resolve → ${ApiClient.MSG_NO_DNS}"
+                    ApiClient.Kind.REFUSED -> "Connection refused → ${ApiClient.MSG_REFUSED}"
+                    ApiClient.Kind.UNREACHABLE -> "No answer / no route → ${ApiClient.MSG_UNREACHABLE}"
+                    ApiClient.Kind.BAD_URL -> "Address problem → ${e.message}"
+                    else -> "${e.kind}: ${e.message}"
+                }
+                val cause = if (e.causeName.isNotBlank()) e.causeName else e.javaClass.simpleName
+                "$verdict\n\nkind=${e.kind}  exception=$cause" +
+                    (if (e.status != 0) "  http=${e.status}" else "")
+            } catch (e: Exception) {
+                "Unexpected: ${e.javaClass.simpleName}: ${e.message}"
             }
             runOnUiThread { if (!isFinishing) connectionStatus.text = msg }
         }

@@ -176,8 +176,25 @@ and names the one that is short.
 A grey dot appears near the bottom of your screen and a tray icon appears by the clock. When the dot
 is grey, you're ready.
 
-> **Want it always available?** Press `Win+R`, type `shell:startup`, and drop a shortcut to
-> `run.bat` in the folder that opens.
+### Keep it running
+
+From 0.2.3 the installer offers to start LocalFlow for you, and the answer defaults to **yes**.
+It registers a per-user scheduled task called **LocalFlow** that runs 20 seconds after each
+sign-in and restarts the app (up to 10 times, a minute apart) if it ever stops. No administrator
+rights are needed and nothing runs as a service.
+
+Why it exists: **signing out of Windows closes every app you own.** Signing back in restores your
+desktop but not your apps, so LocalFlow (and Ollama) stay down until somebody starts them by hand.
+From your phone that looks exactly like a broken Tailscale, which is a miserable thing to debug.
+A Windows session can also bounce on its own after an update or a crash, with no warning.
+
+To turn it on or off: right-click the dot (or the tray icon) and use **Start with Windows**. It
+shows a tick when the task exists. From the installer: `install.bat -Autostart` or
+`install.bat -NoAutostart` skips the question entirely. `--doctor` reports whether the task
+exists, what state it is in, and whether Ollama has a startup entry of its own.
+
+Starting LocalFlow twice is harmless: the second copy notices the first, says so, and exits
+rather than adding a second dot and a second hotkey listener.
 
 ### Three things Windows will do that are not bugs
 
@@ -435,6 +452,22 @@ other apps the way Android's accessibility services can.
 ```
 
 <details>
+<summary><b>The phone says it cannot reach the PC</b></summary>
+
+From 0.1.4 the phone app names which of the three it is, and they have different fixes:
+
+| The phone says | What actually happened | Fix |
+| --- | --- | --- |
+| *Tailscale is off on this phone, or the PC name is wrong* | The PC's name did not resolve at all | Turn Tailscale on **on the phone**, or re-paste the setup line (PC tray → **Phone setup**) |
+| *The PC is on the network but LocalFlow is not running on it* | The PC answered and refused the connection | Start LocalFlow on the PC, and tick **Enable phone access** in its menu. If this keeps happening after you sign out of Windows, turn on **Start with Windows** |
+| *The PC is offline or asleep* | Nothing answered | Wake the PC, or check Tailscale **on the PC** |
+
+The **Diagnose** button on the app's setup screen runs the health check and prints which of the
+three it was plus the raw exception name, which is the useful thing to paste into a bug report.
+Tapping the red ring on the dot repeats the last message.
+</details>
+
+<details>
 <summary><b>The hotkey does nothing</b></summary>
 
 Another app may already own Ctrl+Win (PowerToys is a common culprit) — change `hotkeys.ptt` in
@@ -458,6 +491,10 @@ Something else is probably using your GPU. A game or video editor competing for 
 cleanup model slow, and when it takes too long LocalFlow pastes the simpler rule-based version
 instead so you never lose what you said. Use **Pause (free GPU)** while gaming, or set
 `cleanup.level: none` for pure speed.
+
+If the text is merely *plainer* than usual, Ollama is probably not running: LocalFlow falls back
+to the rules-only cleanup rather than failing. Start Ollama and LocalFlow picks it up within
+30 seconds on its own — no restart, and `/v1/health` flips `llm_ok` back to `true`.
 </details>
 
 <details>

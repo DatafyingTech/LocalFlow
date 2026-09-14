@@ -85,6 +85,18 @@ tailnet name is not baked in), so until you paste the setup line:
   address that is not a URL gets *That address does not look right. Expected
   http://pc-name.tailnet.ts.net* instead.
 
+**Diagnose.** Next to the two buttons is **Diagnose**. It runs the same health call as *Test
+connection* but reports which of the three network failures happened and the raw exception class
+behind it, for example:
+
+```
+Connection refused -> The PC is on the network but LocalFlow is not running on it
+
+kind=REFUSED  exception=ConnectException
+```
+
+That first line is the fix; the second is what to paste into a bug report.
+
 ## The four (five) permissions
 
 Each row on the setup screen has an **Open** button that jumps to the right system page. Flip
@@ -144,7 +156,7 @@ dot only when a text field is active* in the app; the change applies immediately
 | Orange with a ring, pulsing | Hands-free is on |
 | Blue, pulsing | The PC is transcribing and cleaning |
 | Green flash | Text inserted |
-| Red ring + a toast saying why | Something went wrong. It clears after a couple of seconds… |
+| Red ring + a toast saying why | Something went wrong. It clears after a couple of seconds — **tap the ring to see the message again** |
 | Red ring that **stays** | …unless the PC timed out. Your audio is kept: **tap** the dot to send it again, or hold to start over. |
 
 Every state change gives a small haptic tick (switch it off in the app). Sounds are off by
@@ -171,7 +183,9 @@ To stop the dot: the notification's **Stop** button, or the switch in the app.
 | The switch flips itself back off | The microphone permission was denied (Android 14+ will not start the dot's service without it) | Grant Microphone (row 1; after two denials only the system page can, tap *Open*), then flip the switch again |
 | Toast "Android refused microphone access for the dot" | Android 14+ blocked the upgrade to a microphone service while the app was in the background | Open the app once so it is in the foreground, then hold the dot again; check Battery is *Unrestricted* (row 5) |
 | Text ends up on the clipboard, toast says "Copied, paste it where you want" | The accessibility service is off, or this app's text field refuses programmatic text (some browsers, some games) | Turn on the service (row 3). If it is on and one specific app still does this, that app blocks it: long-press → Paste. Please report which app. |
-| Toast "PC not reachable, is Tailscale on?" | Tailscale is off or signed out on the phone, or the PC is asleep, or phone access is not enabled on the PC | Open Tailscale on the phone and check it is connected and the PC shows as online; wake the PC; check the PC tray shows *Phone access: on*. Use **Test connection** in the app. |
+| Toast "Tailscale is off on this phone, or the PC name is wrong" | The PC's name did not resolve at all (`UnknownHostException`) | Open Tailscale on the phone and check it is connected; if it is, re-paste the setup line from the PC (tray → **Phone setup**) in case the PC was renamed |
+| Toast "The PC is on the network but LocalFlow is not running on it" | The PC answered and refused the connection (`ECONNREFUSED`): it is awake and on the tailnet, but nothing is listening on the port | Start LocalFlow on the PC and check its menu shows *Enable phone access* ticked. If this keeps happening after you sign out of Windows, turn on **Start with Windows** in the PC's menu — signing out closes every app |
+| Toast "The PC is offline or asleep" | Nothing answered before the connect timeout, or there is no route | Wake the PC; check Tailscale **on the PC**; check the PC shows as online in your tailnet |
 | Toast "Wrong token" (401) | The token in the app does not match the PC | Copy the setup line again (the PC regenerates the token if you turn phone access off and on) |
 | Toast "PC is warming up / paused" (503) | The PC's models are still loading, or you clicked *Pause (free GPU)* on the PC | Wait a minute, or resume the engine from the PC tray |
 | Red ring stays, toast "PC busy, tap to retry" | The PC took more than 30 s (push-to-talk) or 120 s (hands-free), usually because a game has the GPU | Tap the dot to resend the same audio |
@@ -187,7 +201,8 @@ Open an issue at <https://github.com/DatafyingTech/LocalFlow/issues> with:
 - Phone model and Android version (Settings → About phone), and whether it is Samsung One UI.
 - What you did (hold / tap / ✓ / ✕), what the dot showed, and the exact toast text.
 - The app you were dictating into (the PC's `history.jsonl` also records it as `app`).
-- Whether **Test connection** in the app succeeds.
+- Whether **Test connection** in the app succeeds, and what **Diagnose** prints (it names the
+  failure and the exception class).
 - The PC's `localflow.log` lines from around that time, if the request reached it.
 - For text-insertion problems: what ended up in the field versus what you expected, and whether
   the text went to the clipboard instead.

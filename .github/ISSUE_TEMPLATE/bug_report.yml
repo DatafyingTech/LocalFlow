@@ -88,7 +88,7 @@ body:
     attributes:
       label: LocalFlow version
       description: "`python -m localflow --version`, or the commit you are on."
-      placeholder: "0.2.2"
+      placeholder: "0.2.3"
     validations:
       required: true
 

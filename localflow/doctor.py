@@ -200,6 +200,35 @@ def _c_ollama_model(host: str, model: str) -> tuple[str, str]:
     return WARN, f"{model} is NOT pulled - run: ollama pull {model}"
 
 
+def _c_autostart() -> tuple[str, str]:
+    """Is the "LocalFlow" logon task registered?
+
+    Without it, signing out of Windows (or a Winlogon session bounce) leaves LocalFlow down
+    until somebody double-clicks run.bat - which, from the phone, looks exactly like Tailscale
+    being broken.
+    """
+    from . import autostart
+
+    st = autostart.status()
+    if not st.get("exists"):
+        return WARN, ('no "LocalFlow" scheduled task - LocalFlow will not come back after you sign out. '
+                      'Turn on "Start with Windows" in the tray menu, or re-run install.bat -Autostart')
+    state = st.get("state") or "?"
+    cmd = _safe_path(st["command"]) if st.get("command") else "?"
+    status = OK if state.lower() in ("ready", "running") else WARN
+    return status, f'task "{autostart.TASK_NAME}" exists, state {state}; runs {cmd}'
+
+
+def _c_ollama_autostart() -> tuple[str, str]:
+    from . import autostart
+
+    ok, where = autostart.ollama_startup()
+    if ok:
+        return OK, f"Ollama starts at sign-in ({where})"
+    return WARN, ("no Ollama startup entry found (Startup folder Ollama.lnk / HKCU Run) - after a sign-out "
+                  "Ollama may stay down; LocalFlow then runs rules-only until you start it")
+
+
 def _c_audio() -> tuple[str, str]:
     try:
         import sounddevice as sd
@@ -393,6 +422,12 @@ def report() -> str:
     _check("Ollama", lambda: _c_ollama(host))
     _check("Model", lambda: _c_ollama_model(host, model))
     _emit(INFO, "cleanup.level", str((cfg.get("cleanup") or {}).get("level", "?")))
+    _emit(INFO, "Ollama re-probe", "every 30 s while unreachable; llm_ok recovers without a restart")
+
+    _lines.append("")
+    _lines.append("-- autostart --------------------------------------------------------")
+    _check("LocalFlow task", _c_autostart)
+    _check("Ollama at sign-in", _c_ollama_autostart)
 
     _lines.append("")
     _lines.append("-- audio ------------------------------------------------------------")

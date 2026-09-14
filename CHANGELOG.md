@@ -4,6 +4,50 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] - 2026-09-14
+
+Windows logged a user's session out and straight back in (Winlogon 7002/7001, four seconds
+apart). That closed LocalFlow and Ollama, nothing brought either back, and the phone spent the
+rest of the day saying "PC not reachable, is Tailscale on?" — while Tailscale was fine. This
+release removes all three reasons that took a day to work out.
+
+### Added
+
+- **Autostart.** `install.bat` now offers (default **yes**) to register a per-user scheduled
+  task named `LocalFlow`: at sign-in, 20 s delay, restarts up to 10 times a minute apart, no
+  execution time limit, a second launch ignored. `-Autostart` / `-NoAutostart` answer it
+  non-interactively, and re-running updates the task instead of adding another. The tray and dot
+  menus gained a **Start with Windows** tick that registers or removes exactly the same task
+  (no elevation: it is a per-user task). The definition lives in one place,
+  `tools/autostart.ps1`, so the installer and the app cannot drift apart.
+- **`--doctor` reports autostart**: whether the `LocalFlow` task exists and its state, and
+  whether Ollama has a startup entry of its own (Startup folder `Ollama.lnk` or `HKCU\Run`).
+- **Single-instance guard.** Starting LocalFlow a second time used to give you two dots and two
+  hotkey listeners. The second copy now logs it, says *LocalFlow is already running*, and exits 0.
+
+### Fixed
+
+- **`llm_ok` recovers on its own.** Ollama was probed once, at startup, so a LocalFlow that came
+  up before Ollama reported `llm_ok: false` on `/v1/health` forever and silently ran rules-only
+  cleanup until someone restarted it. Reachability is now live: a light background timer
+  re-probes every 30 s while it is false (and stops once it is true), every dictation and every
+  `/v1/health` and `/v1/warm` re-probe on demand, and a request that fails because Ollama went
+  away flips it back to false and restarts the timer. When Ollama returns, the normal warmup runs
+  once and the log says `Ollama is back; cleanup re-enabled`. All existing fallback behaviour is
+  unchanged: cleanup never waits for the LLM and never loses your text.
+
+### Android (0.1.4)
+
+- **"PC not reachable, is Tailscale on?" is gone**, replaced by the three things that actually
+  happen, each with its own toast: *Tailscale is off on this phone, or the PC name is wrong*
+  (the name did not resolve), *The PC is on the network but LocalFlow is not running on it*
+  (connection refused — the exact incident above), and *The PC is offline or asleep* (connect
+  timeout or no route).
+- **Tapping the red ring repeats the last error message**, which previously vanished with the
+  toast after two seconds.
+- **Diagnose** button on the setup screen: runs the health call and prints which of the three it
+  was plus the raw exception class, for bug reports.
+
 ## [0.2.2] - 2026-09-12
 
 ### Fixed

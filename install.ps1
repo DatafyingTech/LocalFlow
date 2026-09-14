@@ -24,6 +24,8 @@ Options:
   -SkipOllama      do not install/pull the optional cleanup LLM
   -SkipSmoke       do not download the model / run the ASR smoke test (the app then
                    downloads the model itself, with a notification, on its first run)
+  -Autostart       register the per-user "LocalFlow" logon task without asking
+  -NoAutostart     do not register it (and do not ask)
   -Force           delete and recreate .venv from scratch
 #>
 param(
@@ -31,6 +33,8 @@ param(
     [switch]$CPU,
     [switch]$SkipOllama,
     [switch]$SkipSmoke,
+    [switch]$Autostart,
+    [switch]$NoAutostart,
     [switch]$Force,
     [switch]$FetchOnly     # download the project files next to this script and stop
 )
@@ -444,6 +448,49 @@ if ($SkipSmoke) {
     Ok "speech recognition works"
 }
 
+# ---------------------------------------------------------------- 6b. autostart
+# Signing out of Windows kills every app the user owns - LocalFlow and Ollama included - and
+# signing back in restores neither. A per-user logon task is the only thing that brings
+# LocalFlow back on its own, so it is offered (default yes) on every interactive install.
+Step "Start LocalFlow automatically when you sign in"
+$wantAuto = $false
+if ($NoAutostart) {
+    Info "Skipping autostart (-NoAutostart). Turn it on later from the tray menu: Start with Windows."
+} elseif ($Autostart) {
+    $wantAuto = $true
+} elseif ([Environment]::UserInteractive) {
+    Info "Windows closes every app when you sign out, and does not reopen them when you sign back in."
+    Info "A scheduled task starts LocalFlow 20 s after each sign-in and restarts it if it stops."
+    Info "You can change this any time: right-click the dot -> Start with Windows."
+    $answer = Read-Host "    Start LocalFlow automatically when you sign in? (Y/n)"
+    $wantAuto = ($answer -notmatch '^\s*[nN]')
+} else {
+    Info "Not an interactive console; skipping autostart. Re-run with -Autostart to register it."
+}
+
+$autoOn = $false
+if ($wantAuto) {
+    $autoScript = Join-Path $root "toolsutostart.ps1"
+    if (-not (Test-Path $autoScript)) {
+        Warn "toolsutostart.ps1 is missing; cannot register the task."
+    } else {
+        $json = ""
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { $json = & $autoScript -Action Enable -Repo $root } catch { Warn "Autostart failed: $($_.Exception.Message)" } finally { $ErrorActionPreference = $old }
+        $res = $null
+        try { $res = ("$json" -split "`n" | Where-Object { $_.Trim().StartsWith("{") } | Select-Object -Last 1) | ConvertFrom-Json } catch { }
+        if ($res -and $res.ok -and $res.exists) {
+            $autoOn = $true
+            Ok "scheduled task 'LocalFlow' registered (at sign-in, 20 s delay, restarts up to 10 times)"
+        } else {
+            $why = if ($res) { $res.error } else { "$json" }
+            Warn "Could not register the task: $why"
+            Info "You can still turn it on later from the tray menu: Start with Windows."
+        }
+    }
+}
+
 # ---------------------------------------------------------------- 7. tests
 Step "Running unit tests"
 & $venvPy -m pytest -q tests
@@ -472,6 +519,11 @@ if ($cpuMode) {
 }
 if (-not $ollamaReady -and -not $SkipOllama) {
     Write-Host "   Rules-only cleanup (no Ollama). See README.md to add the LLM pass later." -ForegroundColor Yellow
+}
+if ($autoOn) {
+    Write-Host "   LocalFlow will start by itself the next time you sign in to Windows." -ForegroundColor Gray
+} else {
+    Write-Host "   Not starting automatically. Right-click the dot -> Start with Windows to change that." -ForegroundColor Gray
 }
 Write-Host "   Something wrong? Run:  .\.venv\Scripts\python.exe -m localflow --doctor" -ForegroundColor Gray
 Write-Host ""

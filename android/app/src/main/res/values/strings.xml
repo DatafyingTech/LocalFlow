@@ -14,6 +14,8 @@
     <string name="btn_paste_setup">Paste setup line</string>
     <string name="btn_test">Test connection</string>
     <string name="status_not_tested">Not tested yet.</string>
+    <string name="btn_diagnose">Diagnose</string>
+    <string name="diagnose_running">Diagnosing…</string>
     <string name="url_blank_hint">On the PC: right-click the dot → Phone setup → Copy setup line, then press Paste setup line here.</string>
 
     <string name="section_permissions">Permissions</string>
@@ -26,6 +28,11 @@
     <string name="switch_press_enter">Press Enter when you say “press enter”</string>
     <string name="switch_haptics">Haptic tick on state changes</string>
     <string name="switch_sounds">Sounds</string>
+
+    <!-- The three ways "cannot reach the PC" actually happens; kept in sync with ApiClient.kt. -->
+    <string name="err_no_dns">Tailscale is off on this phone, or the PC name is wrong</string>
+    <string name="err_refused">The PC is on the network but LocalFlow is not running on it</string>
+    <string name="err_unreachable">The PC is offline or asleep</string>
 
     <string name="how_to">Hold the dot to talk (push-to-talk), release to send. Tap it once for hands-free, tap ✓ when you are done, ✕ to throw the recording away. Drag it anywhere; it snaps to the nearest edge. By default the dot only appears while a text field is active or the keyboard is up.\n\nGrey = ready. Red = recording. Orange ring = hands-free. Blue = the PC is thinking. Green = text inserted. Red ring = something went wrong (a toast says what). If the red ring stays, the PC timed out: tap the dot to retry with the same audio.</string>
 </resources>

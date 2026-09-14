@@ -9,7 +9,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.PortUnreachableException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -18,9 +22,20 @@ import java.util.concurrent.TimeUnit
  */
 class ApiClient(private val settings: Settings) {
 
-    enum class Kind { UNAUTHORIZED, UNAVAILABLE, TIMEOUT, NETWORK, SERVER, BAD_URL }
+    /**
+     * NO_DNS / REFUSED / UNREACHABLE split what used to be one blurry NETWORK case. They are
+     * three different jobs for the user: turn Tailscale on, start LocalFlow on the PC, wake the
+     * PC up. NETWORK stays as the catch-all for an IOException none of them explain.
+     */
+    enum class Kind { UNAUTHORIZED, UNAVAILABLE, TIMEOUT, NO_DNS, REFUSED, UNREACHABLE, NETWORK, SERVER, BAD_URL }
 
-    class ApiException(val kind: Kind, message: String, val status: Int = 0) : Exception(message) {
+    class ApiException(
+        val kind: Kind,
+        message: String,
+        val status: Int = 0,
+        /** Exception class that actually failed, for the Diagnose button. Never shown in a toast. */
+        val causeName: String = "",
+    ) : Exception(message) {
         /** Timeouts keep the audio so a tap can resend it. */
         val retryable: Boolean get() = kind == Kind.TIMEOUT
     }
@@ -58,6 +73,51 @@ class ApiClient(private val settings: Settings) {
 
         const val MSG_URL_BLANK = "No PC address set. Paste the setup line from your PC."
         const val MSG_URL_MALFORMED = "That address does not look right. Expected http://pc-name.tailnet.ts.net"
+
+        // The three ways "PC not reachable" actually happens, each with its own fix.
+        const val MSG_NO_DNS = "Tailscale is off on this phone, or the PC name is wrong"
+        const val MSG_REFUSED = "The PC is on the network but LocalFlow is not running on it"
+        const val MSG_UNREACHABLE = "The PC is offline or asleep"
+        const val MSG_NETWORK = "Could not reach the PC"
+
+        /**
+         * Which of the three failures is this?
+         *
+         * - the name did not resolve            -> Tailscale is off here / wrong PC name
+         * - the host answered with a reset       -> the PC is up, LocalFlow is not
+         * - nothing answered at all, or no route -> the PC is off or asleep
+         *
+         * ConnectException covers both "refused" and "timed out"/"no route" depending on the
+         * message the OS put in it, so the text is what separates them. UnknownHostException is
+         * checked first because it is also an IOException.
+         */
+        fun kindForIo(e: IOException): Kind {
+            val msg = (e.message ?: "") + " " + (e.cause?.message ?: "")
+            return when {
+                e is UnknownHostException -> Kind.NO_DNS
+                e is NoRouteToHostException || e is PortUnreachableException -> Kind.UNREACHABLE
+                e is SocketTimeoutException -> Kind.UNREACHABLE
+                e is ConnectException && msg.contains("refused", ignoreCase = true) -> Kind.REFUSED
+                e is ConnectException && msg.contains("ECONNREFUSED", ignoreCase = true) -> Kind.REFUSED
+                e is ConnectException -> Kind.UNREACHABLE
+                msg.contains("ECONNREFUSED", ignoreCase = true) -> Kind.REFUSED
+                msg.contains("unable to resolve host", ignoreCase = true) -> Kind.NO_DNS
+                else -> Kind.NETWORK
+            }
+        }
+
+        /** The one sentence the user sees for a [Kind]. */
+        fun messageFor(kind: Kind): String = when (kind) {
+            Kind.NO_DNS -> MSG_NO_DNS
+            Kind.REFUSED -> MSG_REFUSED
+            Kind.UNREACHABLE -> MSG_UNREACHABLE
+            Kind.NETWORK -> MSG_NETWORK
+            Kind.TIMEOUT -> "PC busy, tap to retry"
+            Kind.UNAUTHORIZED -> "Wrong token"
+            Kind.UNAVAILABLE -> "PC is warming up / paused"
+            Kind.BAD_URL -> MSG_URL_MALFORMED
+            Kind.SERVER -> "The PC answered with an error"
+        }
 
         /** Blank means "never set up"; malformed means the user typed something that is not a URL. */
         fun classifyUrl(raw: String): UrlProblem = when {
@@ -126,8 +186,8 @@ class ApiClient(private val settings: Settings) {
         val body = execute(c, req) { code, body ->
             when (code) {
                 200 -> body
-                401 -> throw ApiException(Kind.UNAUTHORIZED, "Wrong token", code)
-                503 -> throw ApiException(Kind.UNAVAILABLE, "PC is warming up / paused", code)
+                401 -> throw ApiException(Kind.UNAUTHORIZED, messageFor(Kind.UNAUTHORIZED), code)
+                503 -> throw ApiException(Kind.UNAVAILABLE, messageFor(Kind.UNAVAILABLE), code)
                 413 -> throw ApiException(Kind.SERVER, "Recording too long for the PC", code)
                 else -> throw ApiException(Kind.SERVER, errorMessage(body, code), code)
             }
@@ -179,15 +239,16 @@ class ApiClient(private val settings: Settings) {
                 return handle(resp.code, body)
             }
         } catch (e: SocketTimeoutException) {
-            // Connect timeouts mean the PC is not there; read timeouts mean it is busy.
+            // Connect timeouts mean the PC is not there; read timeouts mean it is busy thinking.
             if (e.message?.contains("connect", ignoreCase = true) == true) {
-                throw ApiException(Kind.NETWORK, "PC not reachable, is Tailscale on?")
+                throw ApiException(Kind.UNREACHABLE, MSG_UNREACHABLE, causeName = e.javaClass.simpleName)
             }
-            throw ApiException(Kind.TIMEOUT, "PC busy, tap to retry")
+            throw ApiException(Kind.TIMEOUT, messageFor(Kind.TIMEOUT), causeName = e.javaClass.simpleName)
         } catch (e: InterruptedIOException) {
-            throw ApiException(Kind.TIMEOUT, "PC busy, tap to retry")
+            throw ApiException(Kind.TIMEOUT, messageFor(Kind.TIMEOUT), causeName = e.javaClass.simpleName)
         } catch (e: IOException) {
-            throw ApiException(Kind.NETWORK, "PC not reachable, is Tailscale on?")
+            val kind = kindForIo(e)
+            throw ApiException(kind, messageFor(kind), causeName = e.javaClass.simpleName)
         }
     }
 
