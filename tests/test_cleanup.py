@@ -307,6 +307,7 @@ def test_llm_timeout_scales_with_words():
 def test_audio_normalize():
     import numpy as np
 
+    pytest.importorskip("sounddevice", reason="localflow.audio imports the audio stack")
     from localflow.audio import normalize
 
     a = np.array([0.0, 0.05, -0.02, 0.0], dtype=np.float32)

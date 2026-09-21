@@ -4,9 +4,9 @@ The pipeline reloads the speech engine once and transcribes the SAME audio again
 """
 import types
 
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy")
 pytest.importorskip("pynput")
 pytest.importorskip("sounddevice")
 

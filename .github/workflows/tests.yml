@@ -29,8 +29,16 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pip -r requirements-dev.txt
 
-      - name: Run rules tests
-        run: python -m pytest -q tests/test_cleanup.py
+      # Windows runners also get the three light desktop packages, so the hotkey state machine,
+      # the text-injection logic and the phone API are really exercised there. They need no GPU
+      # and no audio device. On Linux those tests skip themselves (pytest.importorskip).
+      - name: Install light desktop dependencies (Windows only)
+        if: runner.os == 'Windows'
+        run: python -m pip install numpy==2.5.2 pynput==1.8.2 pyperclip==1.11.0
+
+      # The whole directory, not one file: a test that is never collected protects nothing.
+      - name: Run tests
+        run: python -m pytest -q tests -rs
 
       - name: Check config.example.yaml matches the built-in defaults
         run: python -m tests.check_example_config
