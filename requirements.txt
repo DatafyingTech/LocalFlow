@@ -26,7 +26,8 @@ tqdm==4.70.0
 # --- Windows integration
 pynput==1.8.2
 sounddevice==0.5.6
-numpy==2.5.2
+numpy==2.5.2; python_version >= "3.12"
+numpy==2.4.6; python_version < "3.12"   # numpy 2.5 dropped Python 3.11; 2.4.6 is the newest that has 3.11 wheels
 pyperclip==1.11.0
 pystray==0.19.5
 pillow==12.3.0

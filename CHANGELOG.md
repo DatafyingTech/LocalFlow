@@ -4,6 +4,21 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] - 2026-09-21
+
+### Fixed
+
+- **Install failed on Python 3.11.** `numpy` was pinned to 2.5.2, which has no Python 3.11 build
+  (numpy 2.5 dropped 3.11), so `install.bat` stopped at the first package for anyone on 3.11 even
+  though 3.11 is documented as supported. The pin now selects 2.4.6 on Python 3.11 and 2.5.2 on
+  3.12 and newer. Every pin in both requirements files was re-checked against the real resolver
+  on 3.11, 3.12 and 3.13, and a full install plus the speech self-test was run on Python 3.11.
+
+### Changed
+
+- CI now runs the whole `tests` directory instead of one file, and Windows runners execute the
+  hotkey, text-injection and phone-API tests. That change is what exposed the bug above.
+
 ## [0.2.5] - 2026-09-21
 
 ### Fixed

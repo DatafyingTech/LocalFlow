@@ -34,7 +34,7 @@ jobs:
       # and no audio device. On Linux those tests skip themselves (pytest.importorskip).
       - name: Install light desktop dependencies (Windows only)
         if: runner.os == 'Windows'
-        run: python -m pip install numpy==2.5.2 pynput==1.8.2 pyperclip==1.11.0
+        run: python -m pip install "numpy==2.5.2; python_version >= '3.12'" "numpy==2.4.6; python_version < '3.12'" pynput==1.8.2 pyperclip==1.11.0
 
       # The whole directory, not one file: a test that is never collected protects nothing.
       - name: Run tests
