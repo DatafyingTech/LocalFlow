@@ -242,6 +242,48 @@ def _c_autostart() -> tuple[str, str]:
     return status, f'task "{autostart.TASK_NAME}" exists, state {state}; runs {cmd}'
 
 
+def _c_llm_autostart(cfg: dict[str, Any]) -> tuple[str, str]:
+    """Will LocalFlow start Ollama itself when a probe finds it down?"""
+    llm_cfg = (cfg.get("llm") or {}) if isinstance(cfg, dict) else {}
+    if not llm_cfg.get("autostart_ollama", True):
+        return INFO, "off (llm.autostart_ollama: false) - LocalFlow waits for you to start Ollama"
+    host = llm_cfg.get("host") or "http://127.0.0.1:11434"
+    try:
+        from .llm import OllamaLauncher, host_is_local
+    except Exception as e:  # noqa: BLE001
+        return WARN, f"cannot check ({type(e).__name__}: {e})"
+    if not host_is_local(host):
+        return INFO, f"not used: llm.host is {host}, which is another machine"
+    launcher = OllamaLauncher()
+    app, cli = launcher.app_exe(), launcher.cli_exe()
+    if app:
+        return OK, f"on - will launch {_safe_path(app)} (up to 3 times per session, 5 minutes apart)"
+    if cli:
+        return OK, f"on - will run `{_safe_path(cli)} serve` (up to 3 times per session, 5 minutes apart)"
+    return INFO, "on, but Ollama is not installed here, so there is nothing to start"
+
+
+def _c_asr_variant(cfg: dict[str, Any]) -> tuple[str, str]:
+    """Which speech-model precision is active, and what it costs in video memory."""
+    asr_cfg = (cfg.get("asr") or {}) if isinstance(cfg, dict) else {}
+    engine = (asr_cfg.get("engine") or "parakeet").lower()
+    if engine != "parakeet":
+        return INFO, f"{engine}: Low VRAM mode applies to Parakeet only"
+    try:
+        from .asr import PARAKEET_VRAM_LABEL, PARAKEET_VRAM_MB, parakeet_quantization
+    except Exception as e:  # noqa: BLE001
+        return WARN, f"cannot check ({type(e).__name__}: {e})"
+    quant = parakeet_quantization(cfg)
+    gb = PARAKEET_VRAM_LABEL.get(quant, "an unknown amount")
+    mb = PARAKEET_VRAM_MB.get(quant)
+    measured = f" (measured: {mb} MB)" if mb else ""
+    if quant == "int8":
+        return OK, (f"Low VRAM mode (int8), {gb} of video memory{measured}; "
+                    "about a third of a second slower per dictation")
+    return OK, (f"full precision (fp32), {gb} of video memory{measured}; fastest. "
+                'Turn on "Low VRAM mode" in the menu to use about 0.6 GB instead')
+
+
 def _c_ollama_autostart() -> tuple[str, str]:
     from . import autostart
 
@@ -442,6 +484,7 @@ def report() -> str:
     _check("ORT wheels", _c_ort_cpu_wheel)
     _check("cuDNN", _c_cudnn)
     _emit(INFO, "asr.engine", f"{asr_cfg.get('engine', '?')} (allow_cpu_fallback: {asr_cfg.get('allow_cpu_fallback')})")
+    _check("Speech model", lambda: _c_asr_variant(cfg))
     if CPU_MODE:
         _emit(INFO, "GPU rows above", "CPU mode is configured, so the GPU is not expected to be used")
 
@@ -450,7 +493,9 @@ def report() -> str:
     _check("Ollama", lambda: _c_ollama(host))
     _check("Model", lambda: _c_ollama_model(host, model))
     _emit(INFO, "cleanup.level", str((cfg.get("cleanup") or {}).get("level", "?")))
+    _emit(INFO, "llm.num_ctx", f"{llm_cfg.get('num_ctx', '?')} (largest request the app can send: about 1,875 tokens)")
     _emit(INFO, "Ollama re-probe", "every 30 s while unreachable; llm_ok recovers without a restart")
+    _check("Start Ollama for me", lambda: _c_llm_autostart(cfg))
 
     _lines.append("")
     _lines.append("-- autostart --------------------------------------------------------")

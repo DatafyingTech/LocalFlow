@@ -73,7 +73,9 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
 - **Types into fullscreen games.** Games ignore normal paste; LocalFlow switches to real keystrokes.
   It never presses Enter for you unless you literally say *"press enter"*.
 - **Stays out of your GPU's way.** Caps its own video memory, unloads the language model when idle,
-  and has a one-click **Pause (free GPU)** for gaming sessions.
+  and has a one-click **Pause (free GPU)** for gaming sessions. **Low VRAM mode** in the same menu
+  swaps in a compact speech model that uses about 0.6 GB instead of 3.0 GB — in our tests it
+  produced word-for-word identical transcripts and cost about a third of a second per dictation.
 - **A dot, not a window.** A 22-pixel status dot you can drag anywhere. It never steals focus from
   whatever you're typing into.
 - **Your words stay yours.** A local history file you own, and nothing else. No telemetry at all.
@@ -95,20 +97,33 @@ what you can dictate. LocalFlow is a like-for-like replacement that runs entirel
 | **Python** | 3.11 | 3.12 |
 | **Internet** | Only to install | Not needed afterwards |
 
-**How much VRAM you actually need.** Speech recognition takes about 3 GB and is capped there by
-`asr.gpu_mem_limit_mb`. The optional cleanup model adds about 3 GB more.
+**How much VRAM you actually need.** Measured on an RTX 4070 SUPER:
+
+| What | Full precision (default) | Low VRAM mode |
+|---|---|---|
+| Speech model | **about 3.0 GB**, 74 ms per dictation | **about 0.6 GB**, 429 ms per dictation |
+| Cleanup model (gemma3:4b, optional) | about 3.8 GB | about 3.8 GB |
+
+Low VRAM mode is the same speech model built with int8 weights. On four real recordings the
+transcripts were word-for-word identical to full precision; it simply costs about a third of a
+second per dictation. Turn it on any time: right-click the dot → **Low VRAM mode (frees 2.4 GB,
+slower)**. The installer turns it on for you if your card has less than 6 GB.
 
 | Your GPU | What to expect |
 |---|---|
 | **8 GB or more** | Everything on, nothing to think about. A GTX 1660, RTX 2060, 3060, 4060 or better. |
-| **6 GB** | Works well. Leave headroom by keeping the cleanup model unloaded when idle, which is already the default. If VRAM gets tight, set `llm.num_ctx: 4096` (see below). |
-| **4 GB** | Speech recognition is fine. Use a smaller cleanup model (`ollama pull gemma3:1b`, then set `llm.model: gemma3:1b`) or set `cleanup.level: none`. Set `llm.num_ctx: 4096` here too. |
+| **6 GB** | Works well as shipped. Turn on **Low VRAM mode** if you also want to game while LocalFlow is loaded. |
+| **4 GB** | Turn on **Low VRAM mode** (the installer does it for you). That leaves room for the cleanup model; if it is still tight, use a smaller one (`ollama pull gemma3:1b`, then set `llm.model: gemma3:1b`) or set `cleanup.level: none`. |
 | **No NVIDIA GPU** | Run `install.bat -CPU`. Expect a few seconds per utterance instead of a fraction of a second. |
 
-**About `llm.num_ctx`.** It is the context window given to the cleanup model, and it ships at 8192
-so that about 25 minutes of hands-free speech fits. That costs roughly 0.5 GB more VRAM for
-gemma3:4b than the old 4096 default. On a 4 GB or 6 GB card, put it back to `4096`, or lower
-`llm.segment_words` so each cleaned segment is smaller. Everything still works either way.
+**About `llm.num_ctx`.** It is the context window given to the cleanup model, and it ships at
+**4096**. The largest request LocalFlow can ever send is one full segment at level `high`: 835
+prompt tokens plus at most 1,040 tokens of output, about 1,875 in total — so 4096 leaves more than
+twice the headroom that is ever used. Dropping it from the old 8192 takes gemma3:4b from 4,060 MB
+down to 3,832 MB of VRAM (about 230 MB back) with no change in speed. Long hands-free speeches are
+unaffected, because they are cleaned in 400-word segments rather than in one giant request. The
+only reason to raise `num_ctx` is if you raise `llm.segment_words`; LocalFlow logs a warning at
+startup if you set the two so that a segment can no longer fit.
 
 **Where the 10 GB goes.** About 5.3 GB sits next to LocalFlow: 2.4 GB for the speech model and
 2.9 GB for the Python environment. About 3.3 GB more goes to `%USERPROFILE%\.ollama` for the
@@ -242,7 +257,8 @@ Open any text box. Notepad, a browser address bar, Slack, your email. Hold **Ctr
 | **Throw away what you just said** | **Esc** while still holding |
 | **Paste that again** | **Shift+Alt+Z** |
 | **Extra-polished version** | Hold **Ctrl+Win+Alt** instead (slower, rewrites for clarity) |
-| **Free up the GPU for a game** | Right-click the dot → **Pause (free GPU)** |
+| **Free up the GPU for a game** | Right-click the dot → **Pause (free GPU)**, or **Low VRAM mode** to hand back 2.4 GB and keep dictating |
+| **Update to the latest version** | Double-click `update.bat` |
 | **It is stuck or misbehaving** | Right-click the dot → **Restart LocalFlow** |
 | **Change anything** | Right-click the dot or the tray icon |
 
@@ -356,19 +372,24 @@ which is Ollama on your own machine. Unplug the network and everything still wor
 
 ## Updating
 
-Installed with git:
+**Double-click `update.bat`.** That is the whole thing. It fetches the latest files over your
+folder (with `git pull` if you cloned, otherwise the ZIP from GitHub), re-runs the installer, and
+restarts LocalFlow if it was running. It prints the old and new version numbers when it finishes.
 
-```powershell
-git pull
-.\install.bat
-```
+Your `config.yaml`, `history.jsonl`, `localflow.log`, the downloaded models and `.venv` are not part
+of the download, so nothing of yours is touched or deleted. Your **Start with Windows** setting is
+left exactly as it is — `update.bat` never asks about it and never changes the scheduled task.
 
-`install.bat` is idempotent. It reuses the `.venv` and the downloaded model, installs anything new,
-and leaves your `config.yaml` alone.
+**Updating an install older than 0.3.0**, which has no `update.bat` yet:
 
-Installed from the ZIP: download the new ZIP, unblock it, and extract it over your LocalFlow
-folder. Keep your existing `config.yaml` when it asks (the update ships `config.example.yaml`, not
-`config.yaml`, so it should not offer to overwrite it). Then run `install.bat` again.
+1. [Download the ZIP](https://github.com/DatafyingTech/LocalFlow/archive/refs/heads/main.zip),
+   right-click it → **Properties** → tick **Unblock** → OK, then **Extract All**.
+2. Copy everything from the extracted `LocalFlow-main` folder over your old LocalFlow folder and
+   choose **Replace the files in the destination**. Your settings, history and downloaded models
+   are not in the ZIP, so they are kept.
+3. Double-click `install.bat`.
+
+From then on, `update.bat` does all of that for you.
 
 New settings added by an update are filled in from the built-in defaults, so an old `config.yaml`
 never stops working.
@@ -407,6 +428,15 @@ at 500 characters, and **Enter is never pressed unless you say "press enter"**.
 That said: this is a tool for typing chat messages, not for automating gameplay. No third-party tool
 can promise how a given anti-cheat will behave, and strict kernel-level systems may simply ignore
 synthetic input. Use it for chat, and if a game's rules forbid any synthetic input, don't use it there.
+
+**Sharing the GPU with a game.** Three settings, in order of how little they cost you:
+
+- **Low VRAM mode** (right-click the dot) swaps the speech model for its int8 build: about
+  0.6 GB of video memory instead of 3.0 GB, so you hand the game back about 2.4 GB and still
+  dictate at any time. Measured cost: about a third of a second per dictation, and the same words.
+- **Pause (free GPU)** unloads both models entirely. Nothing dictates until you resume.
+- **Auto-pause in fullscreen apps** does that for you whenever a game is in front, and resumes
+  about five seconds after you leave it.
 
 ---
 
@@ -517,12 +547,15 @@ Never install PyTorch into this environment — it brings an incompatible cuDNN 
 
 Something else is probably using your GPU. A game or video editor competing for VRAM makes the
 cleanup model slow, and when it takes too long LocalFlow pastes the simpler rule-based version
-instead so you never lose what you said. Use **Pause (free GPU)** while gaming, or set
-`cleanup.level: none` for pure speed.
+instead so you never lose what you said. Use **Pause (free GPU)** or **Low VRAM mode** while
+gaming, or set `cleanup.level: none` for pure speed.
 
 If the text is merely *plainer* than usual, Ollama is probably not running: LocalFlow falls back
-to the rules-only cleanup rather than failing. Start Ollama and LocalFlow picks it up within
-30 seconds on its own — no restart, and `/v1/health` flips `llm_ok` back to `true`.
+to the rules-only cleanup rather than failing. It re-checks every 30 seconds, and if Ollama is
+installed but nothing named `ollama*` is running, it starts Ollama itself (at most three times
+per session, five minutes apart) — so this usually fixes itself within a minute, with no restart,
+and `/v1/health` flips `llm_ok` back to `true`. Set `llm.autostart_ollama: false` if you would
+rather LocalFlow never launched anything.
 </details>
 
 <details>

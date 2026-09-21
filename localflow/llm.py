@@ -6,11 +6,17 @@ Any failure (timeout, connection error, bad output) returns the input text uncha
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -89,6 +95,11 @@ class LLMResult:
 _UNREACHABLE_HINTS = (
     "error connection", "error newconnection", "error requestexception", "error chunkedencoding",
     "connection refused", "error sslerror", "http 502", "http 503", "http 504",
+    # A dead Ollama does not always refuse the connection quickly enough to raise
+    # ConnectionError: on Windows the 0.3 s connect timeout often wins the race, and that used
+    # to be filed as an ordinary "timeout" (a slow GPU), so llm_ok stayed True, the monitor
+    # never re-probed, and nothing ever started Ollama again.
+    "error connecttimeout",
 )
 
 
@@ -102,6 +113,87 @@ def looks_unreachable(reason: str) -> bool:
     return any(h in r for h in _UNREACHABLE_HINTS)
 
 
+# ---------------------------------------------------------------- starting Ollama ourselves
+# Ollama installs a shortcut in the Windows Startup folder, and that shortcut does not always
+# fire (a slow sign-in, a Startup entry disabled by Task Manager, an update that replaced it).
+# When it does not, LocalFlow silently drops to rules-only cleanup and the user has no idea
+# why. Since the monitor is already re-probing every 30 s, it may as well start Ollama.
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+# Windows process-creation flags: no console window, detached from LocalFlow, own process
+# group - so Ollama outlives us and never steals focus or prints into our log.
+_DETACHED = 0x08000000 | 0x00000008 | 0x00000200  # NO_WINDOW | DETACHED | NEW_PROCESS_GROUP
+
+
+def host_is_local(host: str) -> bool:
+    """True when `host` points at this machine. A remote Ollama is somebody else's to start."""
+    try:
+        parts = urlsplit(host if "//" in (host or "") else f"//{host or ''}")
+        name = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    return name in _LOCAL_HOSTS
+
+
+class OllamaLauncher:
+    """Finds and starts the local Ollama. Injectable so the tests never touch a real one.
+
+    Preference order matches what a person would do: the tray app (`ollama app.exe`, which
+    starts the server and keeps its icon), then a bare `ollama serve` off PATH.
+    """
+
+    def app_exe(self) -> "Path | None":
+        base = os.environ.get("LOCALAPPDATA")
+        if not base:
+            return None
+        p = Path(base) / "Programs" / "Ollama" / "ollama app.exe"
+        return p if p.is_file() else None
+
+    def cli_exe(self) -> "Path | None":
+        found = shutil.which("ollama")
+        return Path(found) if found else None
+
+    def installed(self) -> bool:
+        return bool(self.app_exe() or self.cli_exe())
+
+    def running(self) -> bool:
+        """Is any ollama* process alive? (Then it is booting, or wedged - not ours to restart.)"""
+        if sys.platform != "win32":
+            return False
+        try:
+            p = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                timeout=10.0, creationflags=0x08000000,
+            )
+        except Exception:  # noqa: BLE001 - a failed check must not block the start attempt
+            log.debug("tasklist failed while looking for ollama", exc_info=True)
+            return False
+        for line in (p.stdout or "").splitlines():
+            name = line.split(",", 1)[0].strip().strip('"').lower()
+            if name.startswith("ollama"):
+                return True
+        return False
+
+    def start(self) -> tuple[bool, str]:
+        """Launch Ollama hidden and detached. Returns (started, what was launched / why not)."""
+        app = self.app_exe()
+        cmd = [str(app)] if app else None
+        if cmd is None:
+            cli = self.cli_exe()
+            if cli is None:
+                return False, "Ollama is not installed"
+            cmd = [str(cli), "serve"]
+        try:
+            subprocess.Popen(
+                cmd, creationflags=_DETACHED, close_fds=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:  # noqa: BLE001
+            return False, f"{' '.join(cmd)} failed: {type(e).__name__}: {e}"
+        return True, " ".join(cmd)
+
+
 class OllamaMonitor:
     """Is Ollama usable right now?
 
@@ -111,7 +203,9 @@ class OllamaMonitor:
     re-probes every `interval_s`, dictations and `/v1/health` re-probe on demand, and a failed
     request flips a True back to False and restarts the timer.
 
-    `timer_factory` is injectable so tests can drive the timer without waiting.
+    When `autostart` is on and the local Ollama simply is not running, a failed probe also
+    starts it (see OllamaLauncher). `timer_factory` and `launcher` are injectable so tests can
+    drive the timer, and the launcher, without waiting or touching a real Ollama.
     """
 
     def __init__(
@@ -122,6 +216,12 @@ class OllamaMonitor:
         min_gap_s: float = 2.0,
         on_back: "Callable[[], None] | None" = None,
         timer_factory: "Callable[[float, Callable[[], None]], Any] | None" = None,
+        autostart: bool = False,
+        host: str = "",
+        launcher: "OllamaLauncher | Any | None" = None,
+        should_start: "Callable[[], bool] | None" = None,
+        start_gap_s: float = 300.0,
+        max_starts: int = 3,
     ):
         self.client = client
         self.interval_s = float(interval_s)
@@ -133,6 +233,15 @@ class OllamaMonitor:
         self._timer: Any = None
         self._last_probe = 0.0
         self._started = False
+        # -- autostart
+        self.autostart = bool(autostart)
+        self.host = host or getattr(client, "host", "") or ""
+        self.launcher = launcher if launcher is not None else OllamaLauncher()
+        self.should_start = should_start
+        self.start_gap_s = float(start_gap_s)
+        self.max_starts = int(max_starts)
+        self.starts = 0
+        self._last_start = 0.0
 
     # -- state
     @property
@@ -145,6 +254,60 @@ class OllamaMonitor:
         except Exception as e:  # noqa: BLE001 - a probe must never raise into the caller
             log.debug("Ollama probe failed: %s", e)
             return False
+
+    # -- autostart
+    def maybe_start_ollama(self) -> bool:
+        """A probe just failed. Start Ollama if that is the whole problem. Never raises.
+
+        Every condition here is a reason NOT to act, so the quiet path is the common one: the
+        key is off, the host is somebody else's machine, cleanup is switched off anyway,
+        Ollama is not installed, Ollama is already running (booting, or wedged - restarting it
+        would not help), or we have tried recently / often enough already.
+        """
+        if not self.autostart:
+            return False
+        if not host_is_local(self.host):
+            return False
+        if self.should_start is not None:
+            try:
+                if not self.should_start():
+                    return False
+            except Exception:  # noqa: BLE001
+                log.debug("should_start callback failed", exc_info=True)
+                return False
+        launcher = self.launcher
+        if launcher is None:
+            return False
+        try:
+            if not launcher.installed():
+                return False  # nothing to start: existing behaviour, no noise
+            if launcher.running():
+                log.debug("Ollama is running but not answering yet; not starting another one")
+                return False
+        except Exception:  # noqa: BLE001
+            log.debug("could not inspect Ollama", exc_info=True)
+            return False
+        now = time.monotonic()
+        with self._lock:
+            if self.starts >= self.max_starts:
+                log.debug("not starting Ollama again: already tried %d times this session", self.starts)
+                return False
+            if self._last_start and (now - self._last_start) < self.start_gap_s:
+                log.debug("not starting Ollama again: last attempt was %.0f s ago", now - self._last_start)
+                return False
+            self.starts += 1
+            self._last_start = now
+            attempt = self.starts
+        try:
+            ok, how = launcher.start()
+        except Exception as e:  # noqa: BLE001
+            ok, how = False, f"{type(e).__name__}: {e}"
+        if ok:
+            log.info("started Ollama because it was not running (attempt %d of %d, via %s)",
+                     attempt, self.max_starts, how)
+        else:
+            log.warning("could not start Ollama (attempt %d of %d): %s", attempt, self.max_starts, how)
+        return ok
 
     def _cancel_timer(self) -> None:
         t, self._timer = self._timer, None
@@ -180,6 +343,8 @@ class OllamaMonitor:
             self._ok = up
             if not up:
                 self._arm_timer()
+        if not up:
+            self.maybe_start_ollama()
         return up
 
     def check(self, *, force: bool = False) -> bool:
@@ -201,6 +366,8 @@ class OllamaMonitor:
                 self._arm_timer()
         if up:
             log.info("Ollama is back; cleanup re-enabled")
+        else:
+            self.maybe_start_ollama()
         if cb is not None:
             try:
                 cb()
@@ -222,6 +389,25 @@ class OllamaMonitor:
             self._cancel_timer()
 
 
+# Measured with gemma3:4b: the largest request LocalFlow can ever send is a full 400-word
+# segment at level "high", and it comes to 835 prompt tokens. Its reply is capped by
+# num_predict at 400 * 2.5 + 40 = 1,040 tokens, so the whole exchange is about 1,875 tokens -
+# which is why num_ctx ships at 4096 rather than 8192.
+PROMPT_OVERHEAD_TOKENS = 835
+
+
+def context_needed(segment_words: int) -> int:
+    """A deliberately pessimistic bound on one cleanup request, in tokens.
+
+    It treats the measured 835 as fixed overhead and adds the segment's own words (about 1.3
+    tokens per spoken word) plus the num_predict cap on top. That over-counts at the default
+    400 words, on purpose: the startup warning should fire before dictations start getting
+    truncated, not after.
+    """
+    words = max(0, int(segment_words))
+    return int(PROMPT_OVERHEAD_TOKENS + words * 1.3 + (words * 2.5 + 40))
+
+
 class OllamaClient:
     def __init__(self, cfg: dict[str, Any], backtrack_phrases: list[str] | None = None):
         self.cfg = cfg
@@ -235,8 +421,16 @@ class OllamaClient:
         self.timeout_max = float(cfg.get("timeout_max_ms", 20000)) / 1000
         self.polish_timeout = float(cfg.get("polish_timeout_ms", 20000)) / 1000
         self.handsfree_timeout = float(cfg.get("handsfree_timeout_ms", 60000)) / 1000
-        self.num_ctx = int(cfg.get("num_ctx", 8192))
+        self.num_ctx = int(cfg.get("num_ctx", 4096))
         self.segment_words = int(cfg.get("segment_words", 400))
+        need = context_needed(self.segment_words)
+        if need > self.num_ctx:
+            log.warning(
+                "llm.segment_words is %d, so one cleanup request can need about %d tokens of "
+                "context, but llm.num_ctx is only %d. Long dictations will be silently "
+                "truncated by Ollama. Raise llm.num_ctx to at least %d, or lower "
+                "llm.segment_words.", self.segment_words, need, self.num_ctx, need,
+            )
         self.keep_alive = cfg.get("keep_alive", 600)
         self.temperature = float(cfg.get("temperature", 0))
         self.session = requests.Session()
@@ -445,6 +639,12 @@ class OllamaClient:
                     return LLMResult(text, False, ms, f"http {r.status_code}")
             out = self._strip(r.json().get("message", {}).get("content", ""))
             self.last_ok = time.monotonic()
+        except requests.ConnectTimeout:
+            # Nothing answered the socket at all: Ollama is gone, not slow. Said plainly here so
+            # the caller flips llm_ok back to False and the monitor starts watching for it.
+            ms = (time.perf_counter() - t) * 1000
+            log.warning("no answer from Ollama at %s after %.0f ms; using rules-only text", self.host, ms)
+            return LLMResult(text, False, ms, "error ConnectTimeout")
         except requests.Timeout:
             ms = (time.perf_counter() - t) * 1000
             log.info("LLM timeout after %.0f ms; using rules-only text. LLM slow; another app may be using the GPU", ms)

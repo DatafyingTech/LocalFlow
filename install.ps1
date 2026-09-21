@@ -29,6 +29,11 @@ Options:
                    downloads the model itself, with a notification, on its first run)
   -Autostart       register the per-user "LocalFlow" logon task without asking
   -NoAutostart     do not register it (and do not ask)
+  -LowVram         force the compact int8 speech model (about 0.6 GB of VRAM instead of 3.0 GB,
+                   about a third of a second slower per dictation, same words)
+  -FullPrecision   force the full-precision speech model even on a small GPU
+  -Update          refresh the project files from GitHub first (git pull, or the ZIP), then
+                   install normally and restart LocalFlow if it was running. Use update.bat.
   -Force           delete and recreate .venv from scratch
 #>
 [CmdletBinding()]
@@ -41,12 +46,25 @@ param(
     [switch]$SkipSmoke,
     [switch]$Autostart,
     [switch]$NoAutostart,
+    [switch]$LowVram,
+    [switch]$FullPrecision,
+    [switch]$Update,
+    [string]$Repo = "",    # the LocalFlow folder to work on; update.bat passes it because it
+                           # runs this script from a copy in %TEMP% (see update.bat)
     [switch]$Force,
     [switch]$FetchOnly     # download the project files next to this script and stop
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($Repo) {
+    if (-not (Test-Path -LiteralPath $Repo -PathType Container)) {
+        Write-Host "  -Repo `"$Repo`" is not a folder." -ForegroundColor Red
+        exit 1
+    }
+    $root = (Resolve-Path -LiteralPath $Repo).Path
+} else {
+    $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
 Set-Location $root
 
 $PY_DOWNLOAD = "https://www.python.org/downloads/windows/"
@@ -61,6 +79,9 @@ $MIN_DISK_REPO_GB = 5
 $MIN_DISK_PROFILE_GB = 4
 $MIN_DISK_TEMP_GB = 4      # pip unpacks wheels in TEMP (on C:) before installing them
 $MIN_DRIVER = 525
+# Below this much video memory the full-precision speech model (measured: 3,019 MB) leaves
+# nothing for the cleanup model or a game, so the compact int8 build is chosen instead.
+$MIN_VRAM_MIB = 6144
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Ok($msg) { Write-Host "    [ok]   $msg" -ForegroundColor Green }
@@ -131,6 +152,77 @@ if ($missing.Count -gt 0) {
             "Download $PROJECT_ZIP by hand, extract it, and run install.bat from inside the extracted folder."
     }
 }
+# ---------------------------------------------------------------- 0b. -Update: refresh the files
+# update.bat runs this script from %TEMP%, because the step below overwrites install.ps1 and
+# update.bat themselves. Nothing here deletes anything: config.yaml, history.jsonl,
+# localflow.log, models\ and .venv\ are not in the repository, so they simply stay put.
+function Get-LocalFlowVersion([string]$dir) {
+    $init = Join-Path $dir "localflow\__init__.py"
+    if (-not (Test-Path $init)) { return "" }
+    $m = [regex]::Match((Get-Content -Raw -LiteralPath $init), '__version__\s*=\s*"([^"]+)"')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ""
+}
+
+function Get-LocalFlowProcesses([string]$dir) {
+    $needle = $dir.TrimEnd('\').ToLowerInvariant()
+    try {
+        return @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($needle) })
+    } catch {
+        return @()
+    }
+}
+
+$updateOldVersion = ""
+$updateWasRunning = $false
+if ($Update) {
+    Step "Updating LocalFlow in $root"
+    $updateOldVersion = Get-LocalFlowVersion $root
+    $updateWasRunning = ((Get-LocalFlowProcesses $root).Count -gt 0)
+    if ($updateWasRunning) { Info "LocalFlow is running; it will be restarted when the update finishes." }
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    $isRepo = (Test-Path (Join-Path $root ".git"))
+    $pulled = $false
+    if ($git -and $isRepo) {
+        Info "This is a git checkout: git pull --ff-only"
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & git -C $root pull --ff-only } catch { Warn "git pull failed: $($_.Exception.Message)" } finally { $ErrorActionPreference = $old }
+        if ($LASTEXITCODE -eq 0) { $pulled = $true; Ok "files updated with git" }
+        else { Warn "git pull --ff-only did not succeed; falling back to the ZIP from GitHub." }
+    }
+    if (-not $pulled) {
+        Info "Downloading the latest files from GitHub (about 1 MB)..."
+        $tmpRoot = [IO.Path]::GetTempPath().TrimEnd('\')
+        $zip = Join-Path $tmpRoot ("LocalFlow-update-" + [guid]::NewGuid().ToString("N") + ".zip")
+        $ext = $zip -replace '\.zip$', ''
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $PROJECT_ZIP -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $ext -Force
+            $inner = Get-ChildItem -Path $ext -Directory | Select-Object -First 1
+            if (-not $inner) { throw "the downloaded archive was empty" }
+            # Copy over the top. The archive holds no config.yaml, history.jsonl, localflow.log,
+            # models\ or .venv\, so everything of yours survives untouched.
+            Copy-Item -Path (Join-Path $inner.FullName "*") -Destination $root -Recurse -Force
+            Ok "files updated from $PROJECT_ZIP"
+        } catch {
+            Die "Could not download the update: $($_.Exception.Message)" `
+                "Check your internet connection and try again, or download $PROJECT_ZIP by hand and extract it over this folder."
+        } finally {
+            Remove-Item -Path $zip, $ext -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $newVersion = Get-LocalFlowVersion $root
+    if ($updateOldVersion -and $newVersion -and $updateOldVersion -eq $newVersion) {
+        Info "LocalFlow $newVersion - already up to date."
+    } else {
+        Ok "LocalFlow $(if ($updateOldVersion) { $updateOldVersion } else { '?' }) -> $(if ($newVersion) { $newVersion } else { '?' })"
+    }
+}
+
 if ($FetchOnly) {
     Ok "Project files are in place. Run install.bat again (without -FetchOnly) to install."
     exit 0
@@ -376,6 +468,41 @@ if ($gpuOk) {
     Info "Reason: $smiError"
 }
 
+# --- how much video memory? The full-precision speech model needs about 3.0 GB, and the
+# cleanup model wants another 3.8 GB, so a small card is much happier with the compact int8
+# build: same accuracy in our tests, about a third of a second slower per dictation.
+$vramMiB = 0
+if ($gpuOk -and $smiPath) {
+    try {
+        $v = & $smiPath --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+        if ($LASTEXITCODE -eq 0 -and $v) {
+            $first = (("$v" -split "`n")[0]).Trim()
+            [void][int]::TryParse($first, [ref]$vramMiB)
+        }
+    } catch { }
+}
+
+$useInt8 = $false
+if ($LowVram -and $FullPrecision) {
+    Die "-LowVram and -FullPrecision cannot both be given." "Pick one, or neither and let the installer decide from your GPU."
+} elseif ($LowVram) {
+    $useInt8 = $true
+    Info "-LowVram given: LocalFlow will use its compact speech model."
+} elseif ($FullPrecision) {
+    Info "-FullPrecision given: LocalFlow will use the full-precision speech model."
+} elseif ($vramMiB -gt 0) {
+    $vramGB = [math]::Round($vramMiB / 1024, 1)
+    if ($vramMiB -lt $MIN_VRAM_MIB) {
+        $useInt8 = $true
+        Write-Host "    Your GPU has $vramGB GB of video memory, so LocalFlow will use its compact" -ForegroundColor Gray
+        Write-Host "    speech model: same accuracy in our tests, about a third of a second slower" -ForegroundColor Gray
+        Write-Host "    per dictation, and about 0.6 GB of video memory instead of 3.0 GB." -ForegroundColor Gray
+        Write-Host "    Change it any time: right-click the dot -> Low VRAM mode." -ForegroundColor Gray
+    } else {
+        Ok "$vramGB GB of video memory - the full-precision speech model fits comfortably"
+    }
+}
+
 $cpuMode = $false
 if ($CPU) {
     $cpuMode = $true
@@ -551,6 +678,12 @@ if ($cpuMode) {
     Info "  asr.engine: whisper   and   asr.whisper_model: small   in config.yaml"
     Info "  (also set asr.whisper_compute_type: int8 for CPU)"
 }
+
+if ($useInt8) {
+    & $venvPy -c "from localflow import config; c=config.load(); c['asr']['parakeet_quantization']='int8'; config.save(c); print('    asr.parakeet_quantization: int8 (Low VRAM mode)')"
+} elseif ($FullPrecision) {
+    & $venvPy -c "from localflow import config; c=config.load(); c['asr']['parakeet_quantization']=None; config.save(c); print('    asr.parakeet_quantization: null (full precision)')"
+}
 if (-not $ollamaReady -and -not $SkipOllama) {
     # Leave cleanup.level at its default. LocalFlow already detects Ollama at runtime and
     # falls back to rules-only when it is missing, so pinning the level here would quietly
@@ -584,7 +717,9 @@ if ($SkipSmoke) {
 # LocalFlow back on its own, so it is offered (default yes) on every interactive install.
 Step "Start LocalFlow automatically when you sign in"
 $wantAuto = $false
-if ($NoAutostart) {
+if ($Update) {
+    Info "Update: keeping your existing autostart setting exactly as it is."
+} elseif ($NoAutostart) {
     Info "Skipping autostart (-NoAutostart). Turn it on later from the tray menu: Start with Windows."
 } elseif ($Autostart) {
     $wantAuto = $true
@@ -629,6 +764,30 @@ Step "Running unit tests"
 if ($LASTEXITCODE -ne 0) { Die "The unit tests failed." "That is a bug - please open an issue and paste the output above." }
 Ok "tests passed"
 
+# ---------------------------------------------------------------- 7b. restart after an update
+$restarted = $false
+if ($Update -and $updateWasRunning) {
+    Step "Restarting LocalFlow"
+    foreach ($p in (Get-LocalFlowProcesses $root)) {
+        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch { Warn "Could not stop process $($p.ProcessId): $($_.Exception.Message)" }
+    }
+    Start-Sleep -Milliseconds 800
+    $task = $null
+    try { $task = Get-ScheduledTask -TaskName "LocalFlow" -ErrorAction Stop } catch { }
+    if ($task) {
+        try { Start-ScheduledTask -TaskName "LocalFlow" -ErrorAction Stop; $restarted = $true; Ok "started from the 'LocalFlow' scheduled task" }
+        catch { Warn "Could not start the scheduled task: $($_.Exception.Message)" }
+    }
+    if (-not $restarted) {
+        $runBat = Join-Path $root "run.bat"
+        if (Test-Path $runBat) {
+            try { Start-Process -FilePath $runBat -WorkingDirectory $root -WindowStyle Hidden; $restarted = $true; Ok "started with run.bat" }
+            catch { Warn "Could not run run.bat: $($_.Exception.Message)" }
+        }
+    }
+    if (-not $restarted) { Warn "LocalFlow could not be restarted automatically - double-click run.bat." }
+}
+
 # ---------------------------------------------------------------- done
 $ver = ""
 $old = $ErrorActionPreference
@@ -636,9 +795,27 @@ $ErrorActionPreference = "Continue"
 try { $ver = & $venvPy -c "import localflow; print(localflow.__version__)" 2>$null } catch { } finally { $ErrorActionPreference = $old }
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
-Write-Host "   LocalFlow $ver is installed." -ForegroundColor Green
+if ($Update) {
+    if ($updateOldVersion -and $ver -and $updateOldVersion -ne "$ver".Trim()) {
+        Write-Host "   LocalFlow updated: $updateOldVersion -> $ver" -ForegroundColor Green
+    } else {
+        Write-Host "   LocalFlow $ver is up to date." -ForegroundColor Green
+    }
+} else {
+    Write-Host "   LocalFlow $ver is installed." -ForegroundColor Green
+}
 Write-Host "  ============================================================" -ForegroundColor Green
 Write-Host ""
+if ($Update) {
+    if ($restarted) {
+        Write-Host "   LocalFlow has been restarted for you." -ForegroundColor White
+    } else {
+        Write-Host "   Next step:  double-click run.bat" -ForegroundColor White
+    }
+    Write-Host "   Your config.yaml, history and downloaded models were left alone." -ForegroundColor Gray
+    Write-Host ""
+    exit 0
+}
 Write-Host "   Next step:  double-click run.bat" -ForegroundColor White
 Write-Host "               a blue dot appears near the bottom of the screen while it loads;" -ForegroundColor Gray
 Write-Host "               when it turns grey, you are ready (5-20 s, longer the first time)" -ForegroundColor Gray

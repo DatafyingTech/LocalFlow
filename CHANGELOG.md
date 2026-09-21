@@ -4,6 +4,62 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-09-21
+
+### Added
+
+- **One-click updates: `update.bat`.** Double-click it and LocalFlow fetches the latest files over
+  its own folder — `git pull --ff-only` if you cloned the project, otherwise the ZIP from GitHub —
+  re-runs the installer, and starts LocalFlow again if it was running. It prints the old and the
+  new version number. Your `config.yaml`, history, log, downloaded models and `.venv` are not part
+  of the download, so nothing of yours is touched, and your "Start with Windows" choice is left
+  exactly as it was. (The updater overwrites the two files that are running it, so the whole batch
+  body is one parenthesised block and the installer is run from a copy in your temp folder;
+  without that, cmd.exe reads the replaced file from where it left off and fails with garbage.)
+- **Low VRAM mode.** A new tray/dot menu item, **Low VRAM mode (frees 2.4 GB, slower)**, swaps the
+  speech model for its compact int8 build and reloads it in the background. Measured on an RTX
+  4070 SUPER over four real recordings: full precision uses 3,019 MB and takes 74 ms per
+  dictation, int8 uses 625 MB and takes 429 ms, and the transcripts were word-for-word identical
+  on all four. So it hands about 2.4 GB back to your games for about a third of a second per
+  dictation. `install.ps1` now reads your card's total video memory and turns the mode on by
+  itself below 6 GB, explaining why; `-LowVram` and `-FullPrecision` force either choice.
+- **LocalFlow starts Ollama when Ollama has not started itself.** Ollama's Windows Startup shortcut
+  does not always fire, and when it does not, cleanup silently drops to the rules-only pass. If a
+  health probe fails, the host is this machine, cleanup is not switched off, and Ollama is
+  installed but no `ollama*` process is running, LocalFlow launches it (the tray app if present,
+  otherwise `ollama serve`) — hidden, detached, at most three times per session and five minutes
+  apart, with every attempt and its outcome in the log. Turn it off with
+  `llm.autostart_ollama: false`.
+- `--doctor` reports which speech-model precision is active and what it costs in video memory,
+  the configured `llm.num_ctx`, and whether LocalFlow will start Ollama for you.
+
+### Changed
+
+- **`llm.num_ctx` now defaults to 4096 instead of 8192.** The largest request LocalFlow can ever
+  send is one full 400-word segment at level `high`: 835 prompt tokens plus at most 1,040 tokens of
+  output, about 1,875 in total. 4096 therefore leaves more than twice the headroom that is ever
+  used, while taking gemma3:4b from 4,060 MB of video memory down to 3,832 MB — about 230 MB back,
+  with no change in speed. Long hands-free speeches are unaffected because they are already cleaned
+  in 400-word segments rather than one giant request. The only reason to raise it is raising
+  `llm.segment_words`, and LocalFlow now logs a warning at startup if those two are set so that a
+  segment can no longer fit.
+
+### Fixed
+
+- **An Ollama that vanished mid-session was often mistaken for a slow one.** When nothing is
+  listening on the port, the connection attempt usually times out before Windows gets around to
+  refusing it, and LocalFlow filed that as an ordinary "the GPU is busy" timeout. So `llm_ok`
+  stayed `true`, the health re-probe never started, and every dictation quietly fell back to the
+  rules pass until the app was restarted. A connection that is never answered is now reported as
+  what it is, which is also what lets the new "start Ollama for me" behaviour above notice.
+- **`asr.parakeet_quantization: int8` could never work on a fresh machine.** The "is the model
+  already downloaded?" check looked for any `.onnx` file at all, so a cache holding only the
+  full-precision weights counted as a hit; LocalFlow then switched Hugging Face into offline mode
+  and the int8 weights could never be fetched ("cached snapshot ... is incomplete: 2 file(s) are
+  missing"). The check now names the exact files each precision needs, and the one-line
+  "Downloading the speech model" message quotes the right size (about 0.7 GB for int8, about
+  2.5 GB for full precision).
+
 ## [0.2.6] - 2026-09-21
 
 ### Fixed

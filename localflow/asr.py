@@ -56,17 +56,58 @@ class Engine:
         return bool(provs) and all(p[0].startswith(("CUDA", "cuda")) for p in provs.values() if p)
 
 
-def model_is_cached(cfg: dict[str, Any]) -> bool:
-    """True when the ASR model already lives in the local cache.
+# The files onnx-asr actually asks the Hugging Face hub for, per quantization. Listing them
+# here (rather than importing onnx_asr, which drags in onnxruntime) keeps the startup check
+# cheap, and - the point of the list - keeps it QUANTIZATION-AWARE. The fp32 and int8 weights
+# are different files in the same repo, so a cache holding only the fp32 pair is not a cache
+# for int8: reporting it as one is what used to switch HF_HUB_OFFLINE on and leave the int8
+# download impossible ("cached snapshot ... is incomplete: 2 file(s) are missing").
+PARAKEET_FILES: dict[str | None, tuple[str, ...]] = {
+    None: ("encoder-model.onnx", "decoder_joint-model.onnx", "vocab.txt"),
+    "int8": ("encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"),
+}
+# Download sizes, for the one-line message the user sees on a fresh machine.
+PARAKEET_DOWNLOAD_GB: dict[str | None, str] = {None: "about 2.5 GB", "int8": "about 0.7 GB"}
+# Measured on an RTX 4070 SUPER over four real dictations: fp32 3,019 MB / 74 ms median,
+# int8 625 MB / 429 ms median, with identical transcripts. --doctor reports these.
+PARAKEET_VRAM_MB: dict[str | None, int] = {None: 3019, "int8": 625}
+# ... rounded the way the README and the menu say it, so every surface agrees
+PARAKEET_VRAM_LABEL: dict[str | None, str] = {None: "about 3.0 GB", "int8": "about 0.6 GB"}
 
-    Used to decide whether this run needs the network at all. It is deliberately loose (any
-    .onnx file under models_dir): a partially downloaded cache still reports True, and the
-    hub then fetches only what is missing.
+
+def parakeet_quantization(cfg: dict[str, Any]) -> str | None:
+    """asr.parakeet_quantization, normalised ("" and "none" both mean fp32)."""
+    q = cfg["asr"].get("parakeet_quantization")
+    q = str(q).strip().lower() if q is not None else ""
+    return q or None if q not in ("none", "null", "") else None
+
+
+def required_model_files(cfg: dict[str, Any]) -> tuple[str, ...]:
+    """Filenames this configuration needs in the cache, or () when we cannot say."""
+    if (cfg["asr"].get("engine") or "parakeet").lower() != "parakeet":
+        return ()
+    return PARAKEET_FILES.get(parakeet_quantization(cfg), ())
+
+
+def download_size(cfg: dict[str, Any]) -> str:
+    return PARAKEET_DOWNLOAD_GB.get(parakeet_quantization(cfg), "about 2.5 GB")
+
+
+def model_is_cached(cfg: dict[str, Any]) -> bool:
+    """True when the ASR model this config asks for already lives in the local cache.
+
+    Used to decide whether this run needs the network at all. For Parakeet the check names the
+    exact weight files for the configured precision; for anything else it falls back to the
+    old loose test (any .onnx under models_dir), so a partially downloaded cache still reports
+    True and the hub fetches only what is missing.
     """
     models_dir = resolve_path(cfg["asr"].get("models_dir", "models"))
     if not models_dir.is_dir():
         return False
-    return any(models_dir.rglob("*.onnx"))
+    wanted = required_model_files(cfg)
+    if not wanted:
+        return any(models_dir.rglob("*.onnx"))
+    return all(any(models_dir.rglob(name)) for name in wanted)
 
 
 class _NoTokenNag(logging.Filter):
@@ -116,9 +157,11 @@ def _setup_hf_cache(cfg: dict[str, Any]) -> None:
         # cached: never phone home again, and never stall on a flaky connection
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     else:
-        log.debug("ASR model not in %s yet - allowing a one-time download from Hugging Face", models_dir)
+        size = download_size(cfg)
+        log.debug("ASR model (%s) not in %s yet - allowing a one-time download from Hugging Face",
+                  parakeet_quantization(cfg) or "fp32", models_dir)
         try:
-            print("Downloading the speech model (about 2.5 GB). This happens once.", flush=True)
+            print(f"Downloading the speech model ({size}). This happens once.", flush=True)
         except Exception:  # noqa: BLE001 - no console (pythonw): the progress bar is gone too
             pass
 
@@ -156,7 +199,7 @@ class ParakeetEngine(Engine):
     def __init__(self, cfg: dict[str, Any]):
         self.cfg = cfg
         self.model_name = cfg["asr"]["parakeet_model"]
-        self.quant = cfg["asr"].get("parakeet_quantization")
+        self.quant = parakeet_quantization(cfg)
         self.allow_cpu = bool(cfg["asr"].get("allow_cpu_fallback", False))
         self.model = None
         self._providers: dict[str, list[str]] = {}

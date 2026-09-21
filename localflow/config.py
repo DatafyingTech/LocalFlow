@@ -108,8 +108,11 @@ DEFAULTS: dict[str, Any] = {
         "timeout_max_ms": 20000,  # ... up to this cap
         "polish_timeout_ms": 20000,
         "handsfree_timeout_ms": 60000,  # a long speech gets a long timeout; correctness over speed
-        "num_ctx": 8192,  # model context; 8192 covers ~25 min of speech in one hands-free session
+        "num_ctx": 4096,  # model context; the largest request the app can send is ~1,875 tokens
         "segment_words": 400,  # long texts are cleaned in sentence-aligned segments of about this size
+        # start Ollama ourselves when a probe finds it down and its own startup entry did not fire
+        # (local hosts only; at most 3 attempts per session, 5 minutes apart)
+        "autostart_ollama": True,
         "keep_alive": 1800,  # seconds the model stays in VRAM after a call (-1 = forever); re-warmed on PTT press
         "temperature": 0,
     },

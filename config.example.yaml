@@ -45,7 +45,9 @@ audio:
 asr:
   engine: parakeet              # parakeet (fast, English) | whisper (multilingual fallback)
   parakeet_model: nemo-parakeet-tdt-0.6b-v2
-  parakeet_quantization: null   # null (fp32) or int8
+  parakeet_quantization: null   # null = full precision (about 3.0 GB of VRAM, fastest)
+                                # int8 = Low VRAM mode: about 0.6 GB, roughly a third of a second
+                                #   slower per dictation, same words. Also in the dot menu.
   whisper_model: turbo          # large-v3-turbo; use "small" on CPU-only machines
   whisper_compute_type: float16 # use int8 on CPU
   language: en
@@ -134,14 +136,20 @@ llm:
   handsfree_timeout_ms: 60000   # timeout per segment of a whole hands-free speech. Generous on
                                 #   purpose: a long speech is worth waiting for, and a segment that
                                 #   does time out falls back to the rules cleanup on its own.
-  num_ctx: 8192                 # model context window. 8192 covers roughly 25 minutes of speech but
-                                #   costs about 0.5 GB more VRAM for gemma3:4b than the old 4096.
-                                #   On a 4 GB or 6 GB card set this back to 4096.
+  num_ctx: 4096                 # model context window. The largest request LocalFlow can ever send
+                                #   is one full segment at level high: 835 prompt tokens plus at
+                                #   most 1,040 of output = 1,875, so 4096 leaves over 2x headroom
+                                #   and keeps gemma3:4b at 3,832 MB instead of 4,060 MB. Only raise
+                                #   it if you raise segment_words below.
   segment_words: 400            # a long text is cleaned in sentence-aligned segments of about this
                                 #   many words, then joined. Lower it if the model is short on
                                 #   context; a segment that fails only affects itself.
   keep_alive: 1800               # seconds the model stays in VRAM after a call (-1 = forever)
   temperature: 0
+  autostart_ollama: true        # if a health probe finds Ollama down and nothing named ollama* is
+                                #   running, start it (Ollama's own Startup shortcut does not
+                                #   always fire). Local hosts only, at most 3 tries per session and
+                                #   5 minutes apart. Set to false to never launch anything.
 
 # ---------------------------------------------------------------- how text is inserted
 inject:
