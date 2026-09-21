@@ -243,6 +243,7 @@ Open any text box. Notepad, a browser address bar, Slack, your email. Hold **Ctr
 | **Paste that again** | **Shift+Alt+Z** |
 | **Extra-polished version** | Hold **Ctrl+Win+Alt** instead (slower, rewrites for clarity) |
 | **Free up the GPU for a game** | Right-click the dot → **Pause (free GPU)** |
+| **It is stuck or misbehaving** | Right-click the dot → **Restart LocalFlow** |
 | **Change anything** | Right-click the dot or the tray icon |
 
 ### Things you can just say
@@ -479,6 +480,19 @@ From 0.1.4 the phone app names which of the three it is, and they have different
 The **Diagnose** button on the app's setup screen runs the health check and prints which of the
 three it was plus the raw exception name, which is the useful thing to paste into a bug report.
 Tapping the red ring on the dot repeats the last message.
+</details>
+
+<details>
+<summary><b>It seems frozen, or it started recording when I only pressed Ctrl</b></summary>
+
+Right-click the dot or the tray icon and choose **Restart LocalFlow**. It starts a fresh copy and
+forces the old one out if needed, so it works even when the app is stuck.
+
+Both causes are fixed from 0.2.5. Windows sometimes never reports that a key was released (after
+Win+L, a UAC prompt, or with an administrator window in front), which used to leave the Windows key
+"held" so that a lone Ctrl started a recording; LocalFlow now checks the real keyboard state. And
+after the PC wakes from sleep the GPU can drop its session, which used to make every dictation fail
+until you paused and resumed; LocalFlow now reloads the speech engine itself and keeps what you said.
 </details>
 
 <details>

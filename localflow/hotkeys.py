@@ -8,6 +8,7 @@ chord re-injects the last result; the polish chord is PTT with the big-model cle
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from typing import Callable, Iterable
@@ -65,7 +66,38 @@ def key_name(key) -> str | None:
     return None
 
 
+# Virtual-key codes for asking Windows whether a key is physically down right now.
+_PROBE_VKS: dict[str, tuple[int, ...]] = {
+    "ctrl": (0xA2, 0xA3), "alt": (0xA4, 0xA5), "shift": (0xA0, 0xA1), "win": (0x5B, 0x5C),
+    "caps_lock": (0x14,),
+}
+for _vk, _name in _VK_MAP.items():
+    _PROBE_VKS[_name] = (_vk,)
+
+
+def physical_key_state(name: str) -> bool | None:
+    """True/False = the key is / is not physically down; None = cannot tell (not Windows, odd key).
+
+    The pressed-key set below is built from hook events, and Windows does not always deliver a
+    key-up: locking the PC (Win+L), a UAC prompt, or an elevated window in front all swallow it.
+    GetAsyncKeyState reads the real state regardless, so it is used to throw out keys that the
+    event stream wrongly says are still held.
+    """
+    vks = _PROBE_VKS.get(name)
+    if not vks or sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        get = ctypes.windll.user32.GetAsyncKeyState
+        return any(get(vk) & 0x8000 for vk in vks)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Hotkeys:
+    WATCHDOG_S = 0.15  # how often held keys are checked against the real keyboard state
+
     def __init__(
         self,
         cfg: dict,
@@ -79,6 +111,7 @@ class Hotkeys:
         on_polish_stop: Callable[[], None] | None = None,
         is_active: Callable[[], bool] = lambda: False,
         is_handsfree: Callable[[], bool] = lambda: False,
+        probe: Callable[[str], "bool | None"] | None = None,
     ):
         self.ptt = normalize_chord(cfg.get("ptt") or ["ctrl", "win"])
         self.handsfree = normalize_chord(cfg.get("handsfree") or [])
@@ -108,12 +141,19 @@ class Hotkeys:
         self._lock = threading.Lock()
         self._listener: keyboard.Listener | None = None
         self.enabled = True
+        self._probe = probe or physical_key_state
+        self._misses: dict[str, int] = {}  # consecutive "not physically down" readings per key
+        self._watchdog: threading.Thread | None = None
+        self._stop_evt = threading.Event()
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
         self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.daemon = True
         self._listener.start()
+        self._stop_evt.clear()
+        self._watchdog = threading.Thread(target=self._watchdog_loop, name="hotkey-watchdog", daemon=True)
+        self._watchdog.start()
         log.info(
             "Hotkeys: PTT=%s hands-free=%s cancel=%s repaste=%s polish=%s double-tap=%s",
             "+".join(sorted(self.ptt)), "+".join(sorted(self.handsfree)), "+".join(sorted(self.cancel)),
@@ -121,6 +161,7 @@ class Hotkeys:
         )
 
     def stop(self) -> None:
+        self._stop_evt.set()
         if self._listener:
             self._listener.stop()
             self._listener = None
@@ -148,7 +189,12 @@ class Hotkeys:
             return
         with self._lock:
             first = name not in self._down
+            # Trust the keyboard, not our memory of it: drop anything we believe is held that
+            # Windows says is up (its key-up was swallowed). The key being pressed right now is
+            # skipped because the async state may not reflect it yet inside the hook.
+            self._drop_stale(exclude=name, confirm=1)
             self._down.add(name)
+            self._misses.pop(name, None)
             if not first:
                 return  # key auto-repeat
             now = time.monotonic()
@@ -201,7 +247,45 @@ class Hotkeys:
         if name is None:
             return
         with self._lock:
+            self._release_locked(name)
+
+    def _drop_stale(self, *, exclude: str | None, confirm: int) -> None:
+        """Release every key in `_down` that the probe reports as up `confirm` times in a row.
+
+        Must be called with the lock held. Keys the probe cannot verify (None) are left alone.
+        """
+        for n in list(self._down):
+            if n == exclude:
+                continue
+            state = self._probe(n)
+            if state is False:
+                self._misses[n] = self._misses.get(n, 0) + 1
+                if self._misses[n] >= confirm:
+                    log.info("key %r was still marked held but is physically up; releasing it "
+                             "(Windows swallowed its key-up)", n)
+                    self._release_locked(n)
+            else:
+                self._misses.pop(n, None)
+
+    def _watchdog_tick(self) -> None:
+        """One watchdog pass. Two consecutive misses are required so a key-up that is merely in
+        flight through the hook is not pre-empted."""
+        with self._lock:
+            if self._down:
+                self._drop_stale(exclude=None, confirm=2)
+
+    def _watchdog_loop(self) -> None:
+        while not self._stop_evt.wait(self.WATCHDOG_S):
+            try:
+                self._watchdog_tick()
+            except Exception:  # noqa: BLE001
+                log.exception("hotkey watchdog failed")
+
+    def _release_locked(self, name: str) -> None:
+        """Everything a key-up means. Called with the lock held, from the hook or the watchdog."""
+        if True:
             self._down.discard(name)
+            self._misses.pop(name, None)
             now = time.monotonic()
             # chords that fired on press are re-armed once any of their keys is released
             for chord in list(self._fired):

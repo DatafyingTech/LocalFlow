@@ -10,6 +10,7 @@ import argparse
 import gc
 import logging
 import os
+import subprocess
 import platform
 import queue
 import re
@@ -205,6 +206,7 @@ class App:
             ("cmd", "Run doctor", self.run_doctor),
             ("cmd", f"About LocalFlow {__version__}", self.about),
             ("sep",),
+            ("cmd", "Restart LocalFlow", self.restart),
             ("cmd", "Quit LocalFlow", self.quit),
         ]
 
@@ -649,12 +651,16 @@ class App:
             res.empty, res.reason = True, f"dropped: {why}"
             res.timings["total_ms"] = (time.perf_counter() - t0) * 1000
             return res
+        prepared = self.recorder.prepare(audio)
         try:
             t = time.perf_counter()
-            raw = self.engine.transcribe(self.recorder.prepare(audio))
+            raw = self.engine.transcribe(prepared)
             ms_asr = (time.perf_counter() - t) * 1000
         except Exception as e:
-            raise ASRError(str(e)) from e
+            # The GPU context dies when the PC wakes from sleep or the display driver resets
+            # ("CUDA failure 999"), and every transcription then fails until the model is
+            # reloaded. Reload once and try again with the SAME audio, so nothing is lost.
+            raw, ms_asr = self._recover_engine_and_retry(prepared, e)
         res.raw = raw or ""
         res.timings["asr_ms"] = ms_asr
         if not raw or not re.search(r"\w", raw):
@@ -951,6 +957,74 @@ class App:
         threading.Thread(target=_dialog, name="phone-setup", daemon=True).start()
 
     # ------------------------------------------------------------------ shutdown
+    def _recover_engine_and_retry(self, prepared, first_error: Exception) -> tuple[str, float]:
+        """Reload the speech engine after a runtime failure and transcribe the same audio again."""
+        log.warning("ASR failed (%s); reloading the speech engine and retrying this dictation",
+                    str(first_error).splitlines()[0][:160])
+        try:
+            self.set_state("loading")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            t = time.perf_counter()
+            try:
+                self.engine.unload()
+            except Exception:  # noqa: BLE001
+                log.debug("engine.unload during recovery failed", exc_info=True)
+            self.engine = create_engine(self.cfg)
+            self.engine.load()
+            self.engine.warmup()
+            reload_ms = (time.perf_counter() - t) * 1000
+            t = time.perf_counter()
+            raw = self.engine.transcribe(prepared)
+            ms_asr = (time.perf_counter() - t) * 1000
+        except Exception as e2:
+            log.error("ASR still failing after an engine reload: %s", str(e2).splitlines()[0][:200])
+            try:
+                self.tray.notify("The speech engine could not recover. Right-click the dot and "
+                                 "choose Restart LocalFlow.", "LocalFlow")
+            except Exception:  # noqa: BLE001
+                pass
+            raise ASRError(str(e2)) from first_error
+        log.info("speech engine reloaded in %.0f ms (GPU=%s); the dictation was recovered",
+                 reload_ms, self.engine.on_gpu())
+        return raw, ms_asr
+
+    def restart(self) -> None:
+        """Start a fresh copy and get this one out of the way, even if it is wedged.
+
+        A detached helper waits for this process to exit, kills it if it has not gone within a
+        few seconds (a stuck worker thread must not be able to block a restart), then launches
+        LocalFlow again. We then try a normal quit, with a hard exit as the backstop.
+        """
+        log.info("restart requested from the menu")
+        pid = os.getpid()
+        repo = str(config.PROJECT_DIR)
+        pyw = str(Path(sys.executable).with_name("pythonw.exe"))
+        if not Path(pyw).exists():
+            pyw = sys.executable
+        ps = (
+            f"$p={pid}; Wait-Process -Id $p -Timeout 6 -ErrorAction SilentlyContinue; "
+            f"Stop-Process -Id $p -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 700; "
+            f"Start-Process -FilePath '{pyw}' -ArgumentList '-m','localflow' -WorkingDirectory '{repo}'"
+        )
+        try:
+            flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+                cwd=repo, creationflags=flags, close_fds=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("could not start the restart helper: %s", e)
+            self.tray.notify(f"Restart failed: {e}", "LocalFlow")
+            return
+        # If the graceful quit hangs on whatever froze the app, leave anyway; the helper is waiting.
+        t = threading.Timer(3.0, lambda: os._exit(0))
+        t.daemon = True
+        t.start()
+        self.quit()
+
     def quit(self) -> None:
         log.info("quitting")
         try:

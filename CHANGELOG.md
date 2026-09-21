@@ -4,6 +4,30 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] - 2026-09-21
+
+### Fixed
+
+- **Pressing Ctrl on its own could start a recording.** The set of held keys was built only from
+  key-down and key-up events, and Windows does not deliver a key-up in several ordinary
+  situations: locking the PC with Win+L, a UAC prompt, or an administrator window in front. The
+  Windows key then stayed "held" forever, so the next lone Ctrl looked like Ctrl+Win. The only
+  cure was to tap Ctrl+Win again. LocalFlow now checks the real keyboard state before acting on
+  a press and drops any key Windows says is up, and a watchdog does the same every 150 ms.
+- The mirror image of the same bug: a recording that never stopped because the key-up was
+  swallowed mid-hold now ends on its own within about a third of a second.
+- First tests for the hotkey state machine (`tests/test_hotkeys.py`).
+- **Dictations lost after the PC wakes from sleep.** When the GPU context dies ("CUDA failure
+  999", after sleep or a display-driver reset) every transcription failed until the models were
+  reloaded by hand with Pause then Resume, and each failed dictation was thrown away. LocalFlow
+  now reloads the speech engine by itself and transcribes the same audio again, so nothing is
+  lost; it only reports an error if the reload does not help.
+
+### Added
+
+- **Restart LocalFlow** in the tray and dot menu. It starts a fresh copy and forces the old one
+  out if it has not exited within a few seconds, so it works even when the app is wedged.
+
 ## [0.2.4] - 2026-09-14
 
 A friend with a gaming PC and no developer habits tried to install LocalFlow from the README. He
