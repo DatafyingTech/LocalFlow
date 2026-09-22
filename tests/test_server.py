@@ -40,7 +40,7 @@ class Fake:
     def __init__(self):
         self.calls: list[tuple] = []
         self.state = {"version": "0.1.1", "engine": "parakeet", "gpu": True, "llm": "gemma3:4b", "llm_ok": True,
-                      "ready": True, "paused": False}
+                      "ready": True, "paused": False, "error": ""}
         self.cleanup = {"level": "medium", "handsfree_level": "high"}
 
     def status(self):
@@ -103,8 +103,20 @@ def test_health_shape(api):
     code, body, hdr = _call(s, "/v1/health")
     assert code == 200 and hdr["Content-Type"].startswith("application/json")
     j = json.loads(body)
-    assert set(j) == {"ok", "version", "engine", "gpu", "llm", "llm_ok", "ready"}
+    assert set(j) == {"ok", "version", "engine", "gpu", "llm", "llm_ok", "ready", "error"}
     assert j["ok"] is True and j["ready"] is True and j["engine"] == "parakeet" and j["gpu"] is True
+    assert j["error"] == ""  # a healthy PC reports no failure
+
+
+def test_health_reports_a_failed_model_load(api):
+    """A speech engine that could not load must say so here, not just answer ready:false."""
+    s, fake = api
+    fake.state["ready"] = False
+    fake.state["error"] = "The Whisper model could not be downloaded (no internet)."
+    code, body, _ = _call(s, "/v1/health")
+    j = json.loads(body)
+    assert code == 200 and j["ready"] is False
+    assert j["error"] == "The Whisper model could not be downloaded (no internet)."
 
 
 def test_health_not_ready_and_paused(api):

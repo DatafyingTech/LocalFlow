@@ -284,6 +284,37 @@ def _c_asr_variant(cfg: dict[str, Any]) -> tuple[str, str]:
                 'Turn on "Low VRAM mode" in the menu to use about 0.6 GB instead')
 
 
+def _c_engine_cache(cfg: dict[str, Any]) -> tuple[str, str]:
+    """Is the model the CONFIGURED engine needs actually on disk? (Not just "some model is".)"""
+    try:
+        from .asr import download_size, engine_name, model_is_cached, whisper_model_repo
+    except Exception as e:  # noqa: BLE001
+        return WARN, f"cannot check ({type(e).__name__}: {e})"
+    engine = engine_name(cfg)
+    what = whisper_model_repo(cfg) or str((cfg.get("asr") or {}).get("whisper_model", "?")) \
+        if engine == "whisper" else str((cfg.get("asr") or {}).get("parakeet_model", "?"))
+    if model_is_cached(cfg):
+        return OK, f"{engine}: {what} is cached; LocalFlow starts without the network"
+    return INFO, (f"{engine}: {what} is not cached yet - the first start downloads it "
+                  f"({download_size(cfg)}) and needs an internet connection")
+
+
+def _c_last_load() -> tuple[str, str]:
+    """Did the speech engine load the last time LocalFlow started?
+
+    Since 0.3.1 a failed load no longer takes the app down, so the reason has to be readable
+    afterwards - the user runs --doctor precisely because dictation is not working.
+    """
+    from . import config as cfgmod
+
+    rec = cfgmod.load_last_error()
+    if not rec:
+        return OK, "the speech engine loaded normally the last time LocalFlow started"
+    when = rec.get("when") or "?"
+    engine = rec.get("engine") or "?"
+    return FAIL, f"the speech engine failed to load at {when} (engine: {engine}) - {rec.get('error')}"
+
+
 def _c_ollama_autostart() -> tuple[str, str]:
     from . import autostart
 
@@ -485,6 +516,8 @@ def report() -> str:
     _check("cuDNN", _c_cudnn)
     _emit(INFO, "asr.engine", f"{asr_cfg.get('engine', '?')} (allow_cpu_fallback: {asr_cfg.get('allow_cpu_fallback')})")
     _check("Speech model", lambda: _c_asr_variant(cfg))
+    _check("Model cache (engine)", lambda: _c_engine_cache(cfg))
+    _check("Last start", _c_last_load)
     if CPU_MODE:
         _emit(INFO, "GPU rows above", "CPU mode is configured, so the GPU is not expected to be used")
 

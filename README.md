@@ -313,7 +313,33 @@ cleanup:
 audio:
   device: ""              # Part of your mic's name, or "" for the system default
   handsfree_mode: whole   # whole = one pass when you stop | chunked = the old paste-at-each-pause mode
+
+asr:
+  engine: parakeet        # parakeet = the default, fastest, English only | whisper = multilingual
 ```
+
+**The speech engine, and why you probably want the default.** `asr.engine` takes `parakeet` or
+`whisper`. Whisper is the multilingual option — it is not the fast one. Measured on an RTX 4070
+SUPER on the same four recordings, five runs each, median per clip:
+
+| | Parakeet TDT 0.6B v2 (default) | Whisper large-v3-turbo |
+|---|---|---|
+| "Hey Sarah, can you send me that report by Friday question mark" (4.7 s) | **43 ms** | 135 ms |
+| "Send a report to Mark. No, no, wait…" (5.0 s) | **43 ms** | 151 ms |
+| "For the store I need potatoes, cream cheese…" (5.9 s) | **46 ms** | 141 ms |
+| "Um so this is a test comma scratch that…" (5.8 s) | **41 ms** | 144 ms |
+| Video memory while loaded | 3,009 MB | **2,323 MB** |
+| Languages | English | ~99 |
+
+So Whisper is about **three times slower** per dictation and saves about 0.7 GB of video memory.
+If you switched to it hoping dictation would get faster, switch back. There is a second
+difference worth knowing: Whisper punctuates for you and drops what it thinks is noise, so the
+spoken commands LocalFlow understands are eaten before they reach it — on the clips above it
+turned "…by Friday question mark" into "…by Friday?" and swallowed a leading "Um" and a spoken
+"comma". Parakeet transcribes what you actually said and lets the cleanup rules do that work.
+Pick Whisper when you dictate in a language Parakeet does not speak; otherwise stay on the
+default. Changing the engine needs a restart (the menu says so), and the first start on a new
+engine downloads its model: about 1.5 GB for Whisper, about 2.5 GB for Parakeet.
 
 A single key such as `[f9]` works fine as the push-to-talk chord. Bear in mind LocalFlow never
 swallows the key, so whatever you pick still reaches the app you are typing into. Function keys and
@@ -548,7 +574,16 @@ Never install PyTorch into this environment — it brings an incompatible cuDNN 
 Something else is probably using your GPU. A game or video editor competing for VRAM makes the
 cleanup model slow, and when it takes too long LocalFlow pastes the simpler rule-based version
 instead so you never lose what you said. Use **Pause (free GPU)** or **Low VRAM mode** while
-gaming, or set `cleanup.level: none` for pure speed.
+gaming, or set `cleanup.level: none` for pure speed. A transcription that takes longer than a
+second is logged as `slow transcription (N ms) — something else may be using the GPU`, so the log
+tells you which of the two is happening.
+
+The first dictation after a long pause is a special case, and since 0.3.1 it no longer costs you
+anything. Ollama unloads the cleanup model after `llm.keep_alive`, and loading it back takes
+7–19 seconds. Rather than make you wait, LocalFlow checks whether the model is in memory, uses
+the rule-cleaned text for that one dictation, and warms the model in the background — the log
+says `cleanup skipped: model was not loaded (warming it for next time)` — so everything after it
+is fully cleaned again. Set `llm.skip_when_cold: false` if you would rather wait for the model.
 
 If the text is merely *plainer* than usual, Ollama is probably not running: LocalFlow falls back
 to the rules-only cleanup rather than failing. It re-checks every 30 seconds, and if Ollama is

@@ -9,6 +9,7 @@ __pycache__/
 
 # --- runtime state (created on first run; never commit - it contains dictated text)
 history.jsonl
+last_error.json
 localflow.log
 localflow.log.*
 config.yaml

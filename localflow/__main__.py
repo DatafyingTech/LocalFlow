@@ -33,6 +33,10 @@ from .ui import FlowBar, Tray, beep
 log = logging.getLogger("localflow")
 LOG_PATH = config.PROJECT_DIR / "localflow.log"
 
+# A transcription slower than this is not the engine being slow; it is the GPU being busy.
+# Measured normal range on a free RTX 4070 SUPER: 85-400 ms.
+SLOW_ASR_MS = 1000.0
+
 
 class ASRError(RuntimeError):
     """The speech engine raised while transcribing (wrapped so callers can tell it apart)."""
@@ -78,6 +82,7 @@ class App:
         self.debug = bool(cfg.get("debug"))
         self.engine = None
         self.ready = False
+        self.load_error = ""  # why the speech engine is not loaded (empty = no failure)
         self.state = "loading"
         self.handsfree = False
         self.polish_mode = False
@@ -495,7 +500,66 @@ class App:
         return bool(self.cfg["ui"].get("sounds", True))
 
     # ------------------------------------------------------------------ startup
+    # Failure sentences for the notification. Each one names what actually went wrong; the
+    # remedy below is appended to all of them, because it is the same in every case.
+    LOAD_REMEDY = (
+        "LocalFlow is running but cannot transcribe. Right-click the dot → Restart LocalFlow to "
+        "try again, or pick a different engine under \"ASR engine\"."
+    )
+
+    def _load_failure_reason(self, e: Exception) -> str:
+        """One plain sentence naming the real cause of a failed engine load."""
+        engine = (self.cfg["asr"].get("engine") or "parakeet").lower()
+        label = "Whisper" if engine == "whisper" else "speech"
+        detail = str(e).strip().splitlines()[0][:200] or type(e).__name__
+        text = f"{type(e).__name__} {e}".lower()
+        if "offline" in text or "cached snapshot" in text or "localentrynotfound" in text:
+            return (f"The {label} model could not be downloaded (no internet, or huggingface.co "
+                    "could not be reached).")
+        if "connection" in text or "timed out" in text or "timeout" in text or "dns" in text:
+            return f"The {label} model could not be downloaded: {detail}"
+        if "no space" in text or "errno 28" in text:
+            return f"There is not enough disk space for the {label} model."
+        return f"The {label} model could not be loaded: {detail}"
+
+    def _fail_load(self, reason: str, title: str = "LocalFlow: speech engine") -> None:
+        """Record a failed load, tell the user, and stay alive in the error state.
+
+        Before 0.3.1 a failed load left the app running but silent: no reason anywhere the user
+        could see, `ready` stuck False, and --doctor knew nothing about it, so "it closed and
+        never came back" was a fair description of the experience.
+        """
+        self.load_error = reason
+        try:
+            config.save_last_error(reason, engine=str(self.cfg["asr"].get("engine", "")))
+        except Exception:  # noqa: BLE001 - recording the failure must never add a second one
+            log.debug("could not record the load failure", exc_info=True)
+        try:
+            self.set_state("error", reason)
+        except Exception:  # noqa: BLE001
+            log.debug("could not set the error state", exc_info=True)
+        try:
+            self.tray.set_state("error", "LocalFlow — cannot transcribe (see the notification)")
+            self.tray.notify(f"{reason}\n{self.LOAD_REMEDY}", title)
+        except Exception:  # noqa: BLE001
+            log.debug("could not show the error notification", exc_info=True)
+        # the menu, the dot and the log stay usable; the hotkeys do not start, because there is
+        # nothing behind them, and start_recording() refuses while `ready` is False anyway
+        self.refresh_autostart()
+
     def load_models(self) -> None:
+        """Load the speech engine and start everything that depends on it.
+
+        Nothing in here may raise: this runs on the tray's setup thread, and an exception that
+        escapes takes the whole app down with no message (0.3.0, choosing the Whisper engine).
+        """
+        try:
+            self._load_models()
+        except Exception as e:  # noqa: BLE001 - last line of defence; the app must survive
+            log.exception("startup failed")
+            self._fail_load(self._load_failure_reason(e))
+
+    def _load_models(self) -> None:
         # First run after install.bat -SkipSmoke: the model is not cached yet, so engine.load()
         # will spend several minutes downloading it. Say so, or the app just looks hung.
         downloading = not model_is_cached(self.cfg)
@@ -518,21 +582,23 @@ class App:
             log.info("ASR %s ready: load %.0f ms, warmup %.0f ms, GPU=%s", self.engine.name, ms_load, ms_warm, self.engine.on_gpu())
         except CudaNotActiveError as e:
             log.error("%s", e)
+            self.load_error = f"{e} Set asr.allow_cpu_fallback: true to run on CPU."
+            config.save_last_error(self.load_error, engine=str(self.cfg["asr"].get("engine", "")))
             self.set_state("error", "CUDA not active")
-            self.tray.notify(f"{e}\nSet asr.allow_cpu_fallback: true to run on CPU.", "LocalFlow: GPU error")
+            self.tray.set_state("error", "LocalFlow — cannot transcribe (see the notification)")
+            self.tray.notify(f"{e}\nSet asr.allow_cpu_fallback: true to run on CPU.\n{self.LOAD_REMEDY}",
+                             "LocalFlow: GPU error")
+            self.refresh_autostart()
             return
         except Exception as e:
             log.exception("ASR load failed")
-            self.set_state("error", "ASR load failed")
-            if downloading:
-                self.tray.notify(
-                    f"Could not download the speech model: {e}\n"
-                    "Check your internet connection and start LocalFlow again, or run install.bat.",
-                    "LocalFlow: download failed",
-                )
-            else:
-                self.tray.notify(f"ASR load failed: {e}", "LocalFlow error")
+            reason = self._load_failure_reason(e)
+            if downloading and "could not be downloaded" not in reason:
+                reason = f"The speech model could not be downloaded: {str(e).splitlines()[0][:200]}"
+            self._fail_load(reason, "LocalFlow: speech model")
             return
+        config.clear_last_error()
+        self.load_error = ""
 
         try:
             self.recorder.open()
@@ -740,6 +806,10 @@ class App:
             raw, ms_asr = self._recover_engine_and_retry(prepared, e)
         res.raw = raw or ""
         res.timings["asr_ms"] = ms_asr
+        if ms_asr > SLOW_ASR_MS:
+            # normal is 85-400 ms on a free GPU; the owner's log has spikes of 4,509 and 5,428 ms,
+            # which is something else (a game, a render, another model) holding the card
+            log.warning("slow transcription (%.0f ms) — something else may be using the GPU", ms_asr)
         if not raw or not re.search(r"\w", raw):
             # silence / breath noise: the ASR returns nothing (or just punctuation) -> drop quietly
             res.empty, res.reason = True, f"silence ({why})"
@@ -768,7 +838,16 @@ class App:
 
         ms_llm, used = 0.0, False
         if text and use_llm and not cr.snippet_fired:
-            if whole_speech:
+            # A cold model costs 7-19 s and a contended one usually runs out the timeout and is
+            # thrown away anyway, so ask first (a few ms) and skip rather than make the user
+            # wait. Checked here, before the branch, so a long hands-free speech is covered too.
+            cold = llm.skip_because_cold(
+                self.llm, level=level if level in llm.LEVEL_RULES else "light",
+                enabled=bool(self.cfg["llm"].get("skip_when_cold", True)),
+            )
+            if cold:
+                out = llm.LLMResult(text, False, 0.0, "cold: model not loaded")
+            elif whole_speech:
                 out = self.llm.cleanup_long(text, level, fallback=lambda s: cleanup.apply_backtrack(s, ccfg)[0])
             elif polish:
                 out = self.llm.polish(text)
@@ -907,6 +986,9 @@ class App:
             "llm_ok": self.llm_ok,
             "ready": self.ready,
             "paused": self.paused,
+            # empty unless the speech engine failed to load: the phone (and /v1/health) then get
+            # a reason instead of an unexplained ready:false forever
+            "error": self.load_error,
         }
 
     def _ensure_token(self) -> str:

@@ -408,6 +408,44 @@ def context_needed(segment_words: int) -> int:
     return int(PROMPT_OVERHEAD_TOKENS + words * 1.3 + (words * 2.5 + 40))
 
 
+# ---------------------------------------------------------------- the cold-model policy
+# How long a /api/ps answer is reused. Long enough that a hands-free speech cleaned in a dozen
+# segments asks once, short enough that the answer is still about now.
+RESIDENT_CACHE_S = 2.0
+COLD_SKIP_LOG = "cleanup skipped: model was not loaded (warming it for next time)"
+
+
+def skip_because_cold(client: "OllamaClient | Any", *, level: str = "light", enabled: bool = True) -> bool:
+    """True when this utterance should skip the LLM because the model is not in VRAM.
+
+    Measured on a free GPU with gemma3:4b warm, a cleanup call takes 150-600 ms. Cold, it takes
+    7-19 s, and the owner's log is full of both halves of that: `llm 18364 ms (high, used)` for
+    the single word "Okay.", and four waits of 6-10 s that ended in `(skipped)` - the user paid
+    the whole timeout and still got the rules-only text, which is strictly worse than not
+    trying. So: ask Ollama whether the model is resident (a few ms), and if it is not, start a
+    background warm, use the rules-only text for this one, and let the NEXT dictation have the
+    model. Nothing is lost either way; the rules pass always runs.
+
+    `enabled` is llm.skip_when_cold (default true). An unknown answer (Ollama not answering
+    /api/ps) is treated as "carry on": the monitor is the thing that decides Ollama is gone.
+    """
+    if not enabled:
+        return False
+    try:
+        resident = client.resident()
+    except Exception:  # noqa: BLE001 - a policy probe must never break a dictation
+        log.debug("could not ask Ollama whether the model is loaded", exc_info=True)
+        return False
+    if resident is None or resident:
+        return False
+    try:
+        client.warm_now(level=level)
+    except Exception:  # noqa: BLE001
+        log.debug("background warm failed to start", exc_info=True)
+    log.info(COLD_SKIP_LOG)
+    return True
+
+
 class OllamaClient:
     def __init__(self, cfg: dict[str, Any], backtrack_phrases: list[str] | None = None):
         self.cfg = cfg
@@ -416,7 +454,7 @@ class OllamaClient:
         self.host = (cfg.get("host") or "http://127.0.0.1:11434").rstrip("/")
         self.model = cfg.get("model") or "gemma3:4b"
         self.polish_model = cfg.get("polish_model") or self.model
-        self.timeout = float(cfg.get("timeout_ms", 6000)) / 1000
+        self.timeout = float(cfg.get("timeout_ms", 2500)) / 1000
         self.timeout_per_word = float(cfg.get("timeout_per_word_ms", 80)) / 1000
         self.timeout_max = float(cfg.get("timeout_max_ms", 20000)) / 1000
         self.polish_timeout = float(cfg.get("polish_timeout_ms", 20000)) / 1000
@@ -434,8 +472,12 @@ class OllamaClient:
         self.keep_alive = cfg.get("keep_alive", 600)
         self.temperature = float(cfg.get("temperature", 0))
         self.session = requests.Session()
+        self.skip_when_cold = bool(cfg.get("skip_when_cold", True))
         self.last_ok = 0.0  # monotonic time of the last successful call (model known resident)
         self._warm_lock = threading.Lock()
+        self._resident: bool | None = None  # cached /api/ps answer
+        self._resident_at = 0.0
+        self._resident_lock = threading.Lock()
 
     # ------------------------------------------------------------------ helpers
     def available(self) -> bool:
@@ -506,6 +548,27 @@ class OllamaClient:
         except Exception:  # noqa: BLE001
             return None
 
+    def resident(self, max_age_s: float = RESIDENT_CACHE_S) -> bool | None:
+        """is_loaded(), cached for a couple of seconds. None = could not tell.
+
+        /api/ps costs a few milliseconds, which is nothing next to one dictation but is worth
+        avoiding per segment when a whole hands-free speech is cleaned in a dozen of them.
+        A True is also refreshed for free by every successful call (see `last_ok`).
+        """
+        now = time.monotonic()
+        with self._resident_lock:
+            if self._resident_at and (now - self._resident_at) < max_age_s:
+                return self._resident
+        value = self.is_loaded()
+        with self._resident_lock:
+            self._resident, self._resident_at = value, time.monotonic()
+        return value
+
+    def forget_resident(self) -> None:
+        """Drop the cached /api/ps answer (used by the tests and after an explicit unload)."""
+        with self._resident_lock:
+            self._resident, self._resident_at = None, 0.0
+
     def warm_now(self, level: str = "light") -> bool:
         """Start a background warmup regardless of the idle timer (returns False if one is running)."""
         if not self._warm_lock.acquire(blocking=False):
@@ -544,6 +607,7 @@ class OllamaClient:
         try:
             r = self.session.post(f"{self.host}/api/generate", json={"model": model, "keep_alive": 0}, timeout=(0.3, 10))
             self.last_ok = 0.0
+            self.forget_resident()
             log.info("Ollama unload %s -> HTTP %s", model, r.status_code)
             return r.ok
         except requests.RequestException as e:
@@ -639,6 +703,8 @@ class OllamaClient:
                     return LLMResult(text, False, ms, f"http {r.status_code}")
             out = self._strip(r.json().get("message", {}).get("content", ""))
             self.last_ok = time.monotonic()
+            with self._resident_lock:  # it just answered, so it is resident; no need to ask
+                self._resident, self._resident_at = True, self.last_ok
         except requests.ConnectTimeout:
             # Nothing answered the socket at all: Ollama is gone, not slow. Said plainly here so
             # the caller flips llm_ok back to False and the monitor starts watching for it.

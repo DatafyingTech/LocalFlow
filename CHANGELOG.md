@@ -4,6 +4,75 @@ All notable changes to LocalFlow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-09-22
+
+### Fixed
+
+- **Choosing the Whisper engine no longer kills LocalFlow on startup.** Setting
+  `asr.engine: whisper` (from the menu or the config file) and restarting produced an app that
+  closed and did not come back. The startup check that decides whether LocalFlow needs the
+  internet only knew about Parakeet: for any other engine it answered "the model is cached"
+  as soon as *any* `.onnx` file existed under `models`, which a Parakeet cache always satisfies.
+  LocalFlow then set `HF_HUB_OFFLINE=1`, faster-whisper could never fetch its own weights, and
+  the load died with `LocalEntryNotFoundError` / `OfflineModeIsEnabled`. The check is now
+  engine-aware: for Whisper it looks for that model's own snapshot (`models--<org>--<name>`)
+  and for a real `model.bin` inside it, so an interrupted download does not count either. When
+  the model is missing LocalFlow stays online and prints the same one-line
+  "Downloading the speech model (about 1.5 GB). This happens once." with Whisper's own size.
+  This is the same class of bug that was fixed for the int8 Parakeet weights in 0.3.0, and it
+  is now fixed for every engine. Verified end to end: with an empty model folder and
+  `engine: whisper`, LocalFlow downloads the 1.6 GB model and starts.
+- **A speech model that cannot load no longer takes the whole app down.** Whatever the cause —
+  no internet on a first run, a missing CUDA DLL, a full disk — LocalFlow now stays up in its
+  error state instead of disappearing: the dot and the tray icon stay put, a notification names
+  the real reason and what to do about it ("The Whisper model could not be downloaded (no
+  internet…). LocalFlow is running but cannot transcribe. Right-click the dot → Restart
+  LocalFlow to try again, or pick a different engine…"), and the whole menu keeps working, so
+  the engine can be switched back and the log opened without hunting for a process to kill.
+  `/v1/health` answers with `ready: false` and a new `error` field carrying the same sentence,
+  and the reason is written to `last_error.json` so `--doctor` reports it afterwards ("Last
+  start: the speech engine failed to load at … "). Nothing on the startup thread can escape any
+  more.
+- **A stray control character no longer lands in your text.** The replacement in the spoken-
+  punctuation tidy-up had been written into `cleanup.py` as a literal control byte instead of the
+  backreference it was meant to be, so saying "is that right comma question mark" pasted
+  "Is that right" followed by an invisible ^A instead of the question mark. Found while checking
+  the source files for stray bytes.
+
+### Changed
+
+- **Dictation no longer waits for a cold cleanup model.** Two patterns in the log wasted real
+  time and then threw the work away: waits of 6,277, 7,216, 8,530 and 10,332 ms that ended in
+  `(skipped)` — the user sat through the whole timeout and still got the rules-only text — and
+  blocking cold loads such as `llm 18364 ms` for the single word "Okay.". Measured on a free GPU
+  with the model already warm, the same cleanup takes 251, 346 and 580 ms, so the code was never
+  the problem: a cold or contended model was. Before each cleanup call LocalFlow now asks Ollama
+  whether the model is actually in VRAM (`/api/ps`, a few milliseconds, cached for two seconds so
+  a segmented speech asks once). If it is not, it does not wait: the rules-cleaned text is used
+  for this utterance, the model is warmed in the background, and the next dictation gets it —
+  logged as `cleanup skipped: model was not loaded (warming it for next time)`. The same check
+  runs at the start of a whole hands-free speech, so a long speech cannot block on a cold model
+  either. Turn it off with `llm.skip_when_cold: false`. Measured on the phone API with the model
+  evicted: the first dictation came back in 435 ms (skip logged) while the background warm took
+  8,879 ms, and the next one used the model in 178 ms.
+- **`llm.timeout_ms` now defaults to 2500 instead of 6000.** With a cold model skipped rather
+  than waited for, the interactive budget only has to cover a warm model, which measures
+  150–600 ms. `llm.timeout_per_word_ms`, `llm.timeout_max_ms` for long text and the generous
+  `llm.handsfree_timeout_ms` are unchanged, and the rules-only fallback is exactly as it was:
+  nothing you say is ever lost.
+
+### Added
+
+- **A slow transcription now says why it might be slow.** Recognition normally takes 85–400 ms;
+  the log also holds spikes of 4,509 and 5,428 ms, which is another program using the GPU rather
+  than anything LocalFlow did. Anything over 1,000 ms is now logged as
+  `slow transcription (N ms) — something else may be using the GPU`.
+- **The README documents what the two speech engines actually cost**, measured on the same four
+  recordings, because the engine was switched in the hope that Whisper would be faster and it is
+  about three times slower.
+- `--doctor` reports whether the model the *configured* engine needs is cached, and whether the
+  speech engine failed to load the last time LocalFlow started.
+
 ## [0.3.0] - 2026-09-21
 
 ### Added

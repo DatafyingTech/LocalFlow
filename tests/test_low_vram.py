@@ -56,10 +56,17 @@ def test_required_files_differ_by_quantization(tmp_path):
     assert "decoder_joint-model.int8.onnx" in PARAKEET_FILES["int8"]
 
 
-def test_unknown_engine_falls_back_to_the_loose_check(tmp_path):
+def test_whisper_does_not_use_the_parakeet_file_list(tmp_path):
+    """The Whisper cache is checked by whisper_is_cached(), not by the .onnx file list."""
     assert required_model_files(cfg(tmp_path, engine="whisper")) == ()
     put(tmp_path, "whatever.onnx")
-    assert model_is_cached(cfg(tmp_path, engine="whisper")) is True
+    assert model_is_cached(cfg(tmp_path, engine="whisper")) is False, \
+        "0.3.0 bug: a Parakeet cache answered 'yes' for Whisper, so the download was blocked"
+
+
+def test_a_genuinely_unknown_engine_still_uses_the_loose_check(tmp_path):
+    put(tmp_path, "whatever.onnx")
+    assert model_is_cached(cfg(tmp_path, engine="something-else")) is True
 
 
 # ---------------------------------------------------------------- the actual bug

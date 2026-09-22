@@ -74,7 +74,10 @@ def test_defaults():
     assert DEFAULTS["ui"]["hide_when_fullscreen"] is False
     assert DEFAULTS["gpu"]["auto_pause_fullscreen"] is False
     assert DEFAULTS["llm"]["keep_alive"] == 1800
-    assert (DEFAULTS["llm"]["timeout_ms"], DEFAULTS["llm"]["timeout_per_word_ms"], DEFAULTS["llm"]["timeout_max_ms"]) == (6000, 80, 20000)
+    # 2500 (0.3.1), not 6000: the interactive budget is sized for a WARM model (measured
+    # 150-600 ms). A cold one is skipped by llm.skip_when_cold instead of being waited for.
+    assert (DEFAULTS["llm"]["timeout_ms"], DEFAULTS["llm"]["timeout_per_word_ms"], DEFAULTS["llm"]["timeout_max_ms"]) == (2500, 80, 20000)
+    assert DEFAULTS["llm"]["skip_when_cold"] is True
     assert DEFAULTS["asr"]["gpu_mem_limit_mb"] == 3072
 
 

@@ -7,7 +7,7 @@ PC's MagicDNS name to it. Bearer-token auth on /v1/dictate and /v1/warm; /v1/hea
 The server owns no model state. It is given three callables so it is testable without a GPU:
 
     pipeline(audio, mode, level, app) -> PipelineResult   (see localflow.__main__.run_pipeline)
-    status() -> dict   with ready / paused / version / engine / gpu / llm / llm_ok
+    status() -> dict   with ready / paused / version / engine / gpu / llm / llm_ok / error
     lock               the app's pipeline lock (one dictation at a time, never interleaved
                        with the desktop hotkey path)
 """
@@ -245,7 +245,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         st = self.api.status()
         if not st.get("ready"):
-            self._error(503, "PC is not ready yet")
+            self._error(503, str(st.get("error") or "") or "PC is not ready yet")
             return
         if st.get("paused"):
             self._error(503, "PC is paused (Pause (free GPU) in the tray menu)")
@@ -289,6 +289,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "llm": st.get("llm", ""),
                 "llm_ok": bool(st.get("llm_ok")),
                 "ready": bool(st.get("ready")) and not bool(st.get("paused")),
+                # "" unless the speech engine failed to load; then ready is False and this says why
+                "error": str(st.get("error") or ""),
             })
         else:
             self._error(404, "not found")

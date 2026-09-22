@@ -101,9 +101,14 @@ DEFAULTS: dict[str, Any] = {
         "host": "http://127.0.0.1:11434",
         "model": "gemma3:4b",  # benchmarked: 265-660 ms medium on 10-40 words; qwen3 reasons inline
         "polish_model": "gemma3:4b",  # same model: two resident models spill out of VRAM with Parakeet
-        # correctness over speed: generous timeouts (a busy GPU - a game, a render - makes gemma slow).
-        # On timeout the rules-cleaned text is pasted instead.
-        "timeout_ms": 6000,  # base timeout for short inputs
+        # Skip the cleanup call outright when Ollama says the model is not in VRAM, start a
+        # background warm, and let the NEXT dictation have it. Cold, one call costs 7-19 s;
+        # warm, 150-600 ms. Set false to go back to waiting for a cold load.
+        "skip_when_cold": True,
+        # On timeout the rules-cleaned text is pasted instead, so the budget is set to what a
+        # warm model actually needs (measured 150-600 ms) rather than to what a cold one needs:
+        # waiting 6-10 s and then throwing the answer away is worse than not trying.
+        "timeout_ms": 2500,  # base timeout for short inputs
         "timeout_per_word_ms": 80,  # added per input word ...
         "timeout_max_ms": 20000,  # ... up to this cap
         "polish_timeout_ms": 20000,
@@ -218,6 +223,50 @@ def save(cfg: dict[str, Any], path: Path | str | None = None) -> None:
         f.write("# LocalFlow configuration. Edit and restart (or use the tray menu).\n")
         yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
     os.replace(tmp, p)
+
+
+# ------------------------------------------------------------------ last startup failure
+# When the speech engine cannot be loaded the app stays up in its error state (0.3.1), so the
+# reason has to outlive the process that saw it: --doctor runs in a separate process, usually
+# minutes later, and "it did not start" is not a bug report. One line of JSON, rewritten on
+# every start and deleted as soon as a load succeeds.
+LAST_ERROR_PATH = PROJECT_DIR / "last_error.json"
+
+
+def save_last_error(message: str, *, engine: str = "", path: Path | str | None = None) -> None:
+    """Record why the speech engine could not load. Never raises."""
+    import json
+    import time
+
+    p = Path(path) if path else LAST_ERROR_PATH
+    try:
+        p.write_text(
+            json.dumps({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "engine": engine, "error": message}),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        log.debug("could not record the load failure: %s", e)
+
+
+def clear_last_error(path: Path | str | None = None) -> None:
+    """The engine loaded: forget any previous failure. Never raises."""
+    p = Path(path) if path else LAST_ERROR_PATH
+    try:
+        p.unlink(missing_ok=True)
+    except OSError as e:
+        log.debug("could not clear the recorded load failure: %s", e)
+
+
+def load_last_error(path: Path | str | None = None) -> dict[str, Any] | None:
+    """The last recorded load failure, or None. Never raises."""
+    import json
+
+    p = Path(path) if path else LAST_ERROR_PATH
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("error") else None
 
 
 def resolve_path(cfg_value: str) -> Path:

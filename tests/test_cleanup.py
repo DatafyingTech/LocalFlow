@@ -473,6 +473,22 @@ def test_spoken_punctuation_does_not_double_up(cfg):
     assert clean("this is a test period", cfg).text == "This is a test."
 
 
+def test_a_comma_before_a_terminal_mark_keeps_the_mark(cfg):
+    """"comma question mark" ends the sentence; it does not paste a control character.
+
+    The replacement in _tidy_punctuation was written into the file as a literal 0x01 byte
+    instead of the backreference "\\1", so "is that right comma question mark" came out as
+    "Is that right\\x01" - an invisible control character where the "?" belonged.
+    """
+    for said, want in (
+        ("is that right comma question mark", "Is that right?"),
+        ("stop comma exclamation mark", "Stop!"),
+    ):
+        got = clean(said, cfg).text
+        assert got == want
+        assert not any(ord(ch) < 32 and ch not in "\n\t" for ch in got)
+
+
 # ------------------------------------------------------------------ long-text segmenting (llm)
 def test_segment_text_keeps_short_text_whole():
     from localflow.llm import segment_text

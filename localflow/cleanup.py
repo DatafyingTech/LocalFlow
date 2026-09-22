@@ -163,7 +163,7 @@ def spoken_punctuation(text: str) -> str:
         return run if run == "..." else run[-1]  # keep a deliberate ellipsis
 
     text = re.sub(r"[.!?]{2,}", _collapse, text)
-    text = re.sub(r",\s*([.!?])", r"", text)
+    text = re.sub(r",\s*([.!?])", r"\1", text)
     return text
 
 

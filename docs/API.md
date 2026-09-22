@@ -39,11 +39,17 @@ No auth. For the phone's "Test connection" button and for the status page.
   "gpu": true,
   "llm": "gemma3:4b",
   "llm_ok": true,
-  "ready": true
+  "ready": true,
+  "error": ""
 }
 ```
 
 `ready` is false while models are still loading; the phone should show "PC is warming up" and retry.
+
+`error` (since 0.3.1) is empty unless the speech engine failed to load — no internet on a first
+run, a missing CUDA DLL, a full disk. `ready` is then false for good rather than for a moment, and
+`error` carries one plain sentence saying why, which the phone should show instead of "warming up".
+`/v1/dictate` answers 503 with the same sentence.
 
 `llm_ok` is a live answer, not a startup one (since 0.2.3). Serving this endpoint re-probes Ollama
 whenever the current answer is false, and a background timer does the same every 30 s, so an

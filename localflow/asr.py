@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -75,6 +76,56 @@ PARAKEET_VRAM_MB: dict[str | None, int] = {None: 3019, "int8": 625}
 PARAKEET_VRAM_LABEL: dict[str | None, str] = {None: "about 3.0 GB", "int8": "about 0.6 GB"}
 
 
+# faster-whisper resolves a friendly model name to a Hugging Face repo id (faster_whisper.utils.
+# _MODELS). The map is copied here rather than imported so the startup cache check stays cheap -
+# importing faster_whisper drags in ctranslate2 - and so the check can name the exact repo the
+# engine will ask for. A name containing "/" is already a repo id and is used as-is.
+WHISPER_REPOS: dict[str, str] = {
+    "tiny.en": "Systran/faster-whisper-tiny.en",
+    "tiny": "Systran/faster-whisper-tiny",
+    "base.en": "Systran/faster-whisper-base.en",
+    "base": "Systran/faster-whisper-base",
+    "small.en": "Systran/faster-whisper-small.en",
+    "small": "Systran/faster-whisper-small",
+    "medium.en": "Systran/faster-whisper-medium.en",
+    "medium": "Systran/faster-whisper-medium",
+    "large-v1": "Systran/faster-whisper-large-v1",
+    "large-v2": "Systran/faster-whisper-large-v2",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "large": "Systran/faster-whisper-large-v3",
+    "distil-large-v2": "Systran/faster-distil-whisper-large-v2",
+    "distil-medium.en": "Systran/faster-distil-whisper-medium.en",
+    "distil-small.en": "Systran/faster-distil-whisper-small.en",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "distil-large-v3.5": "distil-whisper/distil-large-v3.5-ct2",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+# Download sizes for the one-line "this happens once" message. `turbo` is measured (1.5 GB on
+# disk after the download); the rest are the published CTranslate2 weight sizes, rounded.
+WHISPER_DOWNLOAD_GB: dict[str, str] = {
+    "tiny.en": "about 0.1 GB", "tiny": "about 0.1 GB",
+    "base.en": "about 0.2 GB", "base": "about 0.2 GB",
+    "small.en": "about 0.5 GB", "small": "about 0.5 GB",
+    "medium.en": "about 1.5 GB", "medium": "about 1.5 GB",
+    "large-v1": "about 3.1 GB", "large-v2": "about 3.1 GB", "large-v3": "about 3.1 GB",
+    "large": "about 3.1 GB",
+    "distil-large-v2": "about 1.5 GB", "distil-large-v3": "about 1.5 GB",
+    "distil-large-v3.5": "about 1.5 GB",
+    "distil-medium.en": "about 0.8 GB", "distil-small.en": "about 0.4 GB",
+    "large-v3-turbo": "about 1.5 GB", "turbo": "about 1.5 GB",
+}
+WHISPER_DEFAULT_GB = "about 1.5 GB"
+# The one file that proves a Whisper snapshot is really on disk. Everything else in the repo is
+# a few kB of JSON, and an interrupted download leaves the blob as "<hash>.incomplete" with no
+# link in snapshots/, so "model.bin resolves to a real file" is the honest test.
+WHISPER_WEIGHT_FILE = "model.bin"
+# Measured on an RTX 4070 SUPER over the same four clips as the Parakeet numbers above:
+# large-v3-turbo holds 2,323 MB and takes 135-151 ms per clip, against Parakeet's 3,009 MB and
+# 41-46 ms. Whisper is the multilingual option, not the fast one. README says so in full.
+WHISPER_VRAM_MB: dict[str, int] = {"turbo": 2323, "large-v3-turbo": 2323}
+
+
 def parakeet_quantization(cfg: dict[str, Any]) -> str | None:
     """asr.parakeet_quantization, normalised ("" and "none" both mean fp32)."""
     q = cfg["asr"].get("parakeet_quantization")
@@ -82,28 +133,88 @@ def parakeet_quantization(cfg: dict[str, Any]) -> str | None:
     return q or None if q not in ("none", "null", "") else None
 
 
+def engine_name(cfg: dict[str, Any]) -> str:
+    return (cfg["asr"].get("engine") or "parakeet").lower()
+
+
 def required_model_files(cfg: dict[str, Any]) -> tuple[str, ...]:
     """Filenames this configuration needs in the cache, or () when we cannot say."""
-    if (cfg["asr"].get("engine") or "parakeet").lower() != "parakeet":
+    if engine_name(cfg) != "parakeet":
         return ()
     return PARAKEET_FILES.get(parakeet_quantization(cfg), ())
 
 
+def whisper_model_repo(cfg: dict[str, Any]) -> str:
+    """The Hugging Face repo faster-whisper will ask for, or "" when the name is unknown."""
+    name = str(cfg["asr"].get("whisper_model") or "turbo").strip()
+    if "/" in name:
+        return name
+    return WHISPER_REPOS.get(name.lower(), "")
+
+
+def _hub_cache_dirs(models_dir: Path) -> list[Path]:
+    """Where a `models--org--name` folder can live for this config.
+
+    `_setup_hf_cache` points HF_HUB_CACHE at <models_dir>/hub, so that is the answer; the bare
+    models_dir is checked too for caches written before that layout. An HF_HUB_CACHE the user
+    set themselves is deliberately NOT consulted: guessing "cached" wrongly is what switches
+    the hub offline and breaks the download, while guessing "not cached" only costs one extra
+    online look-up that finds the files anyway.
+    """
+    return [models_dir / "hub", models_dir]
+
+
+def whisper_is_cached(cfg: dict[str, Any]) -> bool:
+    """True when the configured Whisper model is really on disk.
+
+    "Really" is the whole point: the old check just looked for any .onnx file under models_dir,
+    which Parakeet satisfies, so HF_HUB_OFFLINE=1 was set and faster-whisper could never fetch
+    its own weights (0.3.0: the app died on startup the moment anyone chose the Whisper engine).
+    A snapshot folder alone is not enough either - an interrupted download leaves the JSON files
+    and a `<hash>.incomplete` blob behind - so the test is that `model.bin` inside the snapshot
+    resolves to a real, non-empty file.
+    """
+    repo = whisper_model_repo(cfg)
+    if not repo:
+        return False
+    folder = "models--" + repo.replace("/", "--")
+    models_dir = resolve_path(cfg["asr"].get("models_dir", "models"))
+    for base in _hub_cache_dirs(models_dir):
+        snaps = base / folder / "snapshots"
+        if not snaps.is_dir():
+            continue
+        for snap in snaps.iterdir():
+            weights = snap / WHISPER_WEIGHT_FILE
+            try:
+                if weights.is_file() and weights.stat().st_size > 1_000_000:
+                    return True
+            except OSError:  # a dangling link into blobs/, or a file being written right now
+                continue
+    return False
+
+
 def download_size(cfg: dict[str, Any]) -> str:
+    if engine_name(cfg) == "whisper":
+        name = str(cfg["asr"].get("whisper_model") or "turbo").strip().lower()
+        return WHISPER_DOWNLOAD_GB.get(name, WHISPER_DEFAULT_GB)
     return PARAKEET_DOWNLOAD_GB.get(parakeet_quantization(cfg), "about 2.5 GB")
 
 
 def model_is_cached(cfg: dict[str, Any]) -> bool:
     """True when the ASR model this config asks for already lives in the local cache.
 
-    Used to decide whether this run needs the network at all. For Parakeet the check names the
-    exact weight files for the configured precision; for anything else it falls back to the
-    old loose test (any .onnx under models_dir), so a partially downloaded cache still reports
-    True and the hub fetches only what is missing.
+    Used to decide whether this run needs the network at all, so it has to be engine-aware:
+    a cache full of Parakeet weights says nothing about Whisper, and vice versa. For Parakeet
+    the check names the exact weight files for the configured precision; for Whisper it looks
+    for that model's own snapshot; for anything else it falls back to the old loose test (any
+    .onnx under models_dir), so a partially downloaded cache still reports True and the hub
+    fetches only what is missing.
     """
     models_dir = resolve_path(cfg["asr"].get("models_dir", "models"))
     if not models_dir.is_dir():
         return False
+    if engine_name(cfg) == "whisper":
+        return whisper_is_cached(cfg)
     wanted = required_model_files(cfg)
     if not wanted:
         return any(models_dir.rglob("*.onnx"))
@@ -158,8 +269,10 @@ def _setup_hf_cache(cfg: dict[str, Any]) -> None:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     else:
         size = download_size(cfg)
-        log.debug("ASR model (%s) not in %s yet - allowing a one-time download from Hugging Face",
-                  parakeet_quantization(cfg) or "fp32", models_dir)
+        which = (whisper_model_repo(cfg) or str(cfg["asr"].get("whisper_model"))
+                 if engine_name(cfg) == "whisper" else f"parakeet {parakeet_quantization(cfg) or 'fp32'}")
+        log.info("ASR model (%s) not in %s yet - allowing a one-time download (%s) from Hugging Face",
+                 which, models_dir, size)
         try:
             print(f"Downloading the speech model ({size}). This happens once.", flush=True)
         except Exception:  # noqa: BLE001 - no console (pythonw): the progress bar is gone too

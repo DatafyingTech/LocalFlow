@@ -129,7 +129,14 @@ llm:
   host: http://127.0.0.1:11434
   model: gemma3:4b              # ollama pull gemma3:4b
   polish_model: gemma3:4b       # keep one resident model; a 12B next to Parakeet spills out of VRAM
-  timeout_ms: 6000              # base timeout; on timeout the rules-cleaned text is pasted
+  skip_when_cold: true          # before each cleanup call, ask Ollama whether the model is in
+                                #   VRAM (a few ms). If it is not, do not wait for it: paste the
+                                #   rules-cleaned text now, warm the model in the background, and
+                                #   the next dictation gets it. Cold, one call takes 7-19 s;
+                                #   warm, 150-600 ms. Set false to wait for the cold load instead.
+  timeout_ms: 2500              # base timeout; on timeout the rules-cleaned text is pasted.
+                                #   Sized for a warm model (measured 150-600 ms): waiting 6-10 s
+                                #   and then discarding the answer helps nobody.
   timeout_per_word_ms: 80       # added per input word ...
   timeout_max_ms: 20000         # ... up to this cap
   polish_timeout_ms: 20000
